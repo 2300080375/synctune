@@ -241,7 +241,7 @@ io.on('connection', (socket) => {
   // ✅ CHAT HANDLER — broadcast to all users in room
   socket.on('chat-message', ({ roomId, user, text, time }) => {
     console.log(`💬 Chat [${roomId}] ${user}: ${text}`);
-    io.to(roomId).emit('chat-message', { user, text, time });
+    socket.to(roomId).emit('chat-message', { user, text, time });
   });
 
   socket.on('disconnect', () => {
