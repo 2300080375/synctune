@@ -47,11 +47,9 @@ app.get('/api/audio', (req, res) => {
     timeout: 30000
   }, (audioRes) => {
     
-    // Log response details
     const originalContentType = audioRes.headers['content-type'];
     console.log(`✅ Audio response - Status: ${audioRes.statusCode}, Original Content-Type: ${originalContentType}, Size: ${audioRes.headers['content-length']}`);
 
-    // Check for error status codes
     if (audioRes.statusCode === 404) {
       console.error("❌ Audio URL returned 404 - URL may be invalid or expired");
       return res.status(404).json({ error: 'Audio not found' });
@@ -62,8 +60,6 @@ app.get('/api/audio', (req, res) => {
       return res.status(audioRes.statusCode).json({ error: `Server returned ${audioRes.statusCode}` });
     }
 
-    // Force audio/mpeg for Howl.js compatibility
-    // JioSaavn typically returns MP3 files but may have wrong headers
     const contentType = 'audio/mpeg';
     
     console.log(`📤 Sending as: ${contentType}`);
@@ -78,7 +74,6 @@ app.get('/api/audio', (req, res) => {
 
     audioRes.pipe(res);
 
-    // Handle streaming errors
     audioRes.on('error', (err) => {
       console.error("❌ Audio stream error:", err.message);
       if (!res.headersSent) {
@@ -241,6 +236,12 @@ io.on('connection', (socket) => {
       roomManager.updateSongState(roomId, room.currentSong, room.currentUrl, timestamp, true);
       io.to(roomId).emit('resume-song', { timestamp });
     }
+  });
+
+  // ✅ CHAT HANDLER — broadcast to all users in room
+  socket.on('chat-message', ({ roomId, user, text, time }) => {
+    console.log(`💬 Chat [${roomId}] ${user}: ${text}`);
+    io.to(roomId).emit('chat-message', { user, text, time });
   });
 
   socket.on('disconnect', () => {
