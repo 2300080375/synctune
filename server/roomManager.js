@@ -20,6 +20,7 @@ class RoomManager {
         currentUrl: null,
         timestamp: 0,
         isPlaying: false,
+        chatHistory: [],
         createdAt: Date.now(),
       });
       return true;
@@ -55,6 +56,20 @@ class RoomManager {
     room.timestamp = timestamp;
     room.isPlaying = isPlaying;
     return room;
+  }
+
+  addChatMessage(roomId, message) {
+    if (!this.rooms.has(roomId)) return;
+    const room = this.rooms.get(roomId);
+    room.chatHistory.push(message);
+    // Keep only last 50 messages
+    if (room.chatHistory.length > 50) {
+      room.chatHistory.shift();
+    }
+  }
+
+  getChatHistory(roomId) {
+    return this.rooms.get(roomId)?.chatHistory || [];
   }
 
   getRoom(roomId) {

@@ -194,13 +194,14 @@ io.on('connection', (socket) => {
     socket.join(roomId);
 
     socket.emit('room-state', {
+
       users: room.users,
       currentSong: room.currentSong,
       currentUrl: room.currentUrl,
       timestamp: room.timestamp,
-      isPlaying: room.isPlaying
+      isPlaying: room.isPlaying,
+      chatHistory: roomManager.getChatHistory(roomId)  // ✅ add this
     });
-
     io.to(roomId).emit('users-updated', room.users);
   });
 
@@ -240,8 +241,10 @@ io.on('connection', (socket) => {
 
   // ✅ CHAT HANDLER — broadcast to all users in room
   socket.on('chat-message', ({ roomId, user, text, time }) => {
-    console.log(`💬 Chat [${roomId}] ${user}: ${text}`);
-    socket.to(roomId).emit('chat-message', { user, text, time });
+
+    const message = { user, text, time };
+    roomManager.addChatMessage(roomId, message);
+    socket.to(roomId).emit('chat-message', message);
   });
 
   socket.on('disconnect', () => {
