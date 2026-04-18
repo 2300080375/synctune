@@ -93,6 +93,7 @@ export default function Room() {
   const [chatOpen, setChatOpen] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const [chatHistory, setChatHistory] = useState([]);
+  const [usersOpen, setUsersOpen] = useState(false); // ✅ dropdown
 
   const soundRef = useRef(null);
   const currentSongIdRef = useRef(null);
@@ -102,14 +103,9 @@ export default function Room() {
 
   const handleNameSubmit = (name) => { setUserName(name); setShowNameModal(false); };
 
-  // ✅ Exit Room handler
   const handleExitRoom = () => {
     if (soundRef.current) {
-      try {
-        soundRef.current.stop();
-        soundRef.current.unload();
-        soundRef.current = null;
-      } catch (e) {}
+      try { soundRef.current.stop(); soundRef.current.unload(); soundRef.current = null; } catch (e) {}
     }
     leaveRoom();
     navigate('/');
@@ -121,13 +117,16 @@ export default function Room() {
     socket.connect();
     joinRoom(roomId, userId, userName);
 
-    // ✅ Load chat history from room state
     onRoomState(({ users, chatHistory }) => {
       setUsers(users);
-      setChatHistory(chatHistory || []); // ✅ always set, even if empty
+      setChatHistory(chatHistory || []);
     });
 
-    onUsersUpdated(setUsers);
+    // ✅ Replace entire users list — removes left users automatically
+    onUsersUpdated((updatedUsers) => {
+      setUsers([...updatedUsers]);
+    });
+
     onPlaySong(({ songData, playUrl }) => playSong(songData, playUrl, false));
     onPauseSong(() => console.log('📢 Pause event from room'));
     onResumeSong(() => console.log('📢 Resume event from room'));
@@ -142,11 +141,7 @@ export default function Room() {
       offPauseSong();
       offResumeSong();
       if (soundRef.current) {
-        try {
-          soundRef.current.stop();
-          soundRef.current.unload();
-          soundRef.current = null;
-        } catch (e) {}
+        try { soundRef.current.stop(); soundRef.current.unload(); soundRef.current = null; } catch (e) {}
       }
     };
   }, [userName]);
@@ -205,8 +200,7 @@ export default function Room() {
       if (soundRef.current === newSound && currentSongIdRef.current === song.id) {
         try {
           if (newSound.state() === 'loaded' || newSound.state() === 'loading') {
-            newSound.play();
-            setIsLoading(false);
+            newSound.play(); setIsLoading(false);
           }
         } catch (e) {}
       }
@@ -263,7 +257,6 @@ export default function Room() {
               <span style={{fontSize:'12px', color:'#8b8aa8', fontFamily:'monospace', letterSpacing:'0.05em'}}>{roomId}</span>
             </div>
 
-            {/* Chat toggle */}
             <button
               onClick={() => setChatOpen(p => !p)}
               style={{background:'none', border:'none', cursor:'pointer', padding:'6px', color: chatOpen ? '#a78bfa' : '#55546a', display:'flex', alignItems:'center', justifyContent:'center', transition:'color 0.2s'}}
@@ -271,16 +264,9 @@ export default function Room() {
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
             </button>
 
-            {/* ✅ Exit Room Button */}
             <button
               onClick={handleExitRoom}
-              style={{
-                display:'flex', alignItems:'center', gap:'6px',
-                padding:'6px 12px', borderRadius:'8px', border:'1px solid rgba(255,80,80,0.3)',
-                background:'rgba(255,80,80,0.1)', color:'#ff6b6b',
-                cursor:'pointer', fontSize:'12px', fontWeight:600,
-                transition:'all 0.2s'
-              }}
+              style={{display:'flex', alignItems:'center', gap:'6px', padding:'6px 12px', borderRadius:'8px', border:'1px solid rgba(255,80,80,0.3)', background:'rgba(255,80,80,0.1)', color:'#ff6b6b', cursor:'pointer', fontSize:'12px', fontWeight:600, transition:'all 0.2s'}}
               onMouseEnter={e => e.currentTarget.style.background='rgba(255,80,80,0.2)'}
               onMouseLeave={e => e.currentTarget.style.background='rgba(255,80,80,0.1)'}
             >
@@ -300,25 +286,43 @@ export default function Room() {
           </div>
 
           {/* Right panel */}
-          <div style={{width: chatOpen ? '300px' : '200px', display:'flex', flexDirection:'column', borderLeft:'1px solid rgba(255,255,255,0.05)', overflow:'hidden', transition:'width 0.2s ease', flexShrink:0}}>
+          <div style={{width: chatOpen ? '300px' : '60px', display:'flex', flexDirection:'column', borderLeft:'1px solid rgba(255,255,255,0.05)', overflow:'hidden', transition:'width 0.2s ease', flexShrink:0}}>
 
-            {/* Users */}
+            {/* ✅ Users Dropdown */}
             <div style={{padding:'14px 16px', borderBottom:'1px solid rgba(255,255,255,0.05)', flexShrink:0}}>
-              <div style={{display:'flex', alignItems:'center', gap:'8px', marginBottom:'12px'}}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#55546a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-                <span style={{fontSize:'12px', fontWeight:600, color:'#6b6a84', letterSpacing:'0.05em', textTransform:'uppercase'}}>Users ({users.length})</span>
+              <div
+                onClick={() => setUsersOpen(p => !p)}
+                style={{display:'flex', alignItems:'center', justifyContent:'space-between', cursor:'pointer', userSelect:'none'}}
+              >
+                <div style={{display:'flex', alignItems:'center', gap:'8px'}}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#55546a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                  <span style={{fontSize:'12px', fontWeight:600, color:'#6b6a84', letterSpacing:'0.05em', textTransform:'uppercase'}}>
+                    Users ({users.length})
+                  </span>
+                </div>
+                <svg
+                  width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#55546a" strokeWidth="2"
+                  strokeLinecap="round" strokeLinejoin="round"
+                  style={{transform: usersOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition:'transform 0.2s', flexShrink:0}}
+                >
+                  <polyline points="6 9 12 15 18 9"/>
+                </svg>
               </div>
-              <div style={{display:'flex', flexDirection:'column', gap:'6px'}}>
-                {users.map((u, i) => (
-                  <div key={i} style={{display:'flex', alignItems:'center', gap:'8px'}}>
-                    <div style={{width:'28px', height:'28px', borderRadius:'50%', background:`hsl(${(u.name?.charCodeAt(0) || 0) * 42 % 360},60%,55%)`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:'11px', fontWeight:700, color:'white', flexShrink:0}}>
-                      {u.name?.[0]?.toUpperCase() || '?'}
+
+              {/* ✅ Dropdown list — only active users */}
+              {usersOpen && (
+                <div style={{marginTop:'10px', display:'flex', flexDirection:'column', gap:'6px'}}>
+                  {users.map((u, i) => (
+                    <div key={i} style={{display:'flex', alignItems:'center', gap:'8px'}}>
+                      <div style={{width:'28px', height:'28px', borderRadius:'50%', background:`hsl(${(u.name?.charCodeAt(0) || 0) * 42 % 360},60%,55%)`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:'11px', fontWeight:700, color:'white', flexShrink:0}}>
+                        {u.name?.[0]?.toUpperCase() || '?'}
+                      </div>
+                      <span style={{fontSize:'13px', color:'#c4c3de', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{u.name}</span>
+                      {u.name === userName && <span style={{fontSize:'10px', color:'#7c3aed', background:'rgba(124,58,237,0.1)', padding:'1px 6px', borderRadius:'99px', flexShrink:0}}>you</span>}
                     </div>
-                    <span style={{fontSize:'13px', color:'#c4c3de', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{u.name}</span>
-                    {u.name === userName && <span style={{fontSize:'10px', color:'#7c3aed', background:'rgba(124,58,237,0.1)', padding:'1px 6px', borderRadius:'99px', flexShrink:0}}>you</span>}
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Chat */}
