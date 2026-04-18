@@ -13,7 +13,7 @@ import {
   offRoomState, offUsersUpdated, offPlaySong, offPauseSong, offResumeSong
 } from '../socket';
 
-const getProxyUrl = (url) => `http://localhost:3001/api/audio?url=${encodeURIComponent(url)}`;
+const getProxyUrl = (url) => `${import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001'}/api/audio?url=${encodeURIComponent(url)}`;
 
 // Enhanced URL quality selection with fallback logic
 const selectBestAudioUrl = (song) => {
