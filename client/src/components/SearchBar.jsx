@@ -11,7 +11,7 @@ export default function SearchBar({ onResultsFound }) {
     if (!q) { setError('Enter a song name'); return; }
     setLoading(true); setError('');
     try {
-      const res = await fetch('http://127.0.0.1:3001/api/search?query=' + encodeURIComponent(q));
+      const res = await fetch(`${import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001'}/api/search?query=` + encodeURIComponent(q));
       const text = await res.text();
       let data;
       try { data = JSON.parse(text); } catch { throw new Error('Invalid JSON'); }
