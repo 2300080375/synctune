@@ -1,10 +1,17 @@
 import { useState, useEffect, useRef } from 'react';
 import { emitChatMessage, onChatMessage, offChatMessage, onSystemMessage, offSystemMessage } from '../socket';
 
-export default function Chat({ roomId, userName }) {
+export default function Chat({ roomId, userName, chatHistory = [] }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const bottomRef = useRef(null);
+
+  // ✅ Load chat history when joining room
+  useEffect(() => {
+    if (chatHistory.length > 0) {
+      setMessages(chatHistory.map(msg => ({ ...msg, type: 'chat' })));
+    }
+  }, [chatHistory]);
 
   useEffect(() => {
     onChatMessage(msg => setMessages(p => [...p, { ...msg, type: 'chat' }]));
@@ -19,6 +26,7 @@ export default function Chat({ roomId, userName }) {
     const text = input.trim();
     if (!text) return;
     const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    // ✅ Add locally for sender only
     setMessages(p => [...p, { user: userName, text, time, type: 'chat', isOwn: true }]);
     emitChatMessage(roomId, userName, text);
     setInput('');
@@ -54,7 +62,7 @@ export default function Chat({ roomId, userName }) {
                 </div>
               )}
               <div style={{maxWidth:'78%', display:'flex', flexDirection:'column', gap:'3px', alignItems: isOwn ? 'flex-end' : 'flex-start'}}>
-                {!isOwn && <p style={{fontSize:'11px', color:'#55546a', paddingLeft:'4px'}}>{msg.user}</p>}
+                <p style={{fontSize:'11px', color:'#55546a', paddingLeft:'4px', paddingRight:'4px'}}>{msg.user}</p>
                 <div style={{
                   padding:'8px 12px', borderRadius: isOwn ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
                   background: isOwn ? 'linear-gradient(135deg,#7c3aed,#6d28d9)' : 'rgba(255,255,255,0.05)',

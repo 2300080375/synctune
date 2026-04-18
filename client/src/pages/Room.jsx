@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { Howl } from 'howler';
 import SearchBar from '../components/SearchBar';
 import SongList from '../components/SongList';
@@ -15,15 +15,9 @@ import {
 
 const getProxyUrl = (url) => `${import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001'}/api/audio?url=${encodeURIComponent(url)}`;
 
-// Enhanced URL quality selection with fallback logic
 const selectBestAudioUrl = (song) => {
-  if (!song?.downloadUrl || !Array.isArray(song.downloadUrl)) {
-    return null;
-  }
-  
-  // Quality preference order: highest quality first
+  if (!song?.downloadUrl || !Array.isArray(song.downloadUrl)) return null;
   const qualityPreference = ['320kbps', '192kbps', '128kbps', '96kbps', '64kbps'];
-  
   for (const quality of qualityPreference) {
     const urlObj = song.downloadUrl.find(d => d.quality === quality && d.url);
     if (urlObj?.url) {
@@ -31,13 +25,9 @@ const selectBestAudioUrl = (song) => {
       return { url: urlObj.url, quality };
     }
   }
-  
-  // Fallback: use first available URL with a URL
   if (song.downloadUrl[0]?.url) {
-    console.log(`⚠️ Using first available URL with quality: ${song.downloadUrl[0].quality}`);
     return { url: song.downloadUrl[0].url, quality: song.downloadUrl[0].quality };
   }
-  
   return null;
 };
 
@@ -91,6 +81,7 @@ function UsernameModal({ onSubmit }) {
 
 export default function Room() {
   const { roomId } = useParams();
+  const navigate = useNavigate();
   const [userId] = useState(() => `user_${Date.now()}`);
   const [userName, setUserName] = useState('');
   const [showNameModal, setShowNameModal] = useState(true);
@@ -101,279 +92,153 @@ export default function Room() {
   const [sound, setSound] = useState(null);
   const [chatOpen, setChatOpen] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
-  
-  // Refs for managing sound lifecycle and preventing race conditions
+  const [chatHistory, setChatHistory] = useState([]);
+
   const soundRef = useRef(null);
   const currentSongIdRef = useRef(null);
   const abortControllerRef = useRef(null);
-  const pausePositionRef = useRef(0); // Track pause position for resume
-  const loadTimeoutRef = useRef(null); // Track load timeout for cleanup
+  const pausePositionRef = useRef(0);
+  const loadTimeoutRef = useRef(null);
 
   const handleNameSubmit = (name) => { setUserName(name); setShowNameModal(false); };
+
+  // ✅ Exit Room handler
+  const handleExitRoom = () => {
+    if (soundRef.current) {
+      try {
+        soundRef.current.stop();
+        soundRef.current.unload();
+        soundRef.current = null;
+      } catch (e) {}
+    }
+    leaveRoom();
+    navigate('/');
+  };
 
   useEffect(() => {
     if (!userName) return;
     const socket = getSocket();
     socket.connect();
     joinRoom(roomId, userId, userName);
-    onRoomState(({ users }) => setUsers(users));
+
+    // ✅ Load chat history from room state
+    onRoomState(({ users, chatHistory }) => {
+      setUsers(users);
+      if (chatHistory && chatHistory.length > 0) {
+        setChatHistory(chatHistory.map(msg => ({ ...msg, type: 'chat' })));
+      }
+    });
+
     onUsersUpdated(setUsers);
     onPlaySong(({ songData, playUrl }) => playSong(songData, playUrl, false));
-    onPauseSong(() => {
-      // This is for OTHER users in the room pausing
-      // Don't do anything locally if we're not the one who initiated it
-      console.log('📢 Pause event from room');
-    });
-    onResumeSong(() => {
-      // This is for OTHER users in the room resuming
-      // Don't do anything locally if we're not the one who initiated it
-      console.log('📢 Resume event from room');
-    });
+    onPauseSong(() => console.log('📢 Pause event from room'));
+    onResumeSong(() => console.log('📢 Resume event from room'));
+
     return () => {
-      // Cancel any pending song load
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
-      
-      // Clear any pending load timeout
-      if (loadTimeoutRef.current) {
-        clearTimeout(loadTimeoutRef.current);
-      }
-      
+      if (abortControllerRef.current) abortControllerRef.current.abort();
+      if (loadTimeoutRef.current) clearTimeout(loadTimeoutRef.current);
       leaveRoom();
       offRoomState();
       offUsersUpdated();
       offPlaySong();
       offPauseSong();
       offResumeSong();
-      
       if (soundRef.current) {
         try {
           soundRef.current.stop();
           soundRef.current.unload();
           soundRef.current = null;
-        } catch (e) {
-          console.error('Cleanup error:', e);
-        }
+        } catch (e) {}
       }
     };
   }, [userName]);
 
   const playSong = (song, url, emit = true, retryCount = 0) => {
-    if (!url) {
-      showToast('No playable URL found', 'error');
-      return;
-    }
-    
-    // Reset pause position for new song
+    if (!url) { showToast('No playable URL found', 'error'); return; }
     pausePositionRef.current = 0;
-    
-    // Cancel any previous pending operations
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
+    if (abortControllerRef.current) abortControllerRef.current.abort();
     abortControllerRef.current = new AbortController();
     const signal = abortControllerRef.current.signal;
-    
-    // Clear any pending load timeout
-    if (loadTimeoutRef.current) {
-      clearTimeout(loadTimeoutRef.current);
-      loadTimeoutRef.current = null;
-    }
-    
-    // Update UI to show loading state
+    if (loadTimeoutRef.current) { clearTimeout(loadTimeoutRef.current); loadTimeoutRef.current = null; }
     setIsLoading(true);
     setIsPlaying(false);
     currentSongIdRef.current = song.id;
-    
-    // Cleanup previous sound BEFORE creating new one
     if (soundRef.current) {
-      try {
-        soundRef.current.stop();
-        soundRef.current.unload();
-      } catch (e) {
-        console.error('Cleanup error:', e);
-      }
+      try { soundRef.current.stop(); soundRef.current.unload(); } catch (e) {}
       soundRef.current = null;
     }
-    
     const proxyUrl = getProxyUrl(url);
-    console.log(`🎵 Loading song: ${song.name} (Attempt ${retryCount + 1})`);
-    
-    // Create new Howl instance with enhanced codec handling
     const newSound = new Howl({
       src: [proxyUrl],
       html5: true,
       volume: 1,
-      preload: 'metadata', // Load metadata immediately, stream audio on play
-      format: ['mp3', 'mpeg'], // Explicitly declare formats
-      xhr: {
-        timeout: 30000, // 30 second timeout
-        method: 'GET'
-      },
+      preload: 'metadata',
+      format: ['mp3', 'mpeg'],
+      xhr: { timeout: 30000, method: 'GET' },
       onload: () => {
-        // Only proceed if this is still the active song
-        if (signal.aborted || currentSongIdRef.current !== song.id) {
-          newSound.stop();
-          newSound.unload();
-          return;
-        }
-        
-        // Clear the fallback timeout since onload fired
-        if (loadTimeoutRef.current) {
-          clearTimeout(loadTimeoutRef.current);
-          loadTimeoutRef.current = null;
-        }
-        
-        console.log(`✅ Song loaded successfully: ${song.name}`);
+        if (signal.aborted || currentSongIdRef.current !== song.id) { newSound.stop(); newSound.unload(); return; }
+        if (loadTimeoutRef.current) { clearTimeout(loadTimeoutRef.current); loadTimeoutRef.current = null; }
         setIsLoading(false);
-        
-        // Auto-play after successful load
-        try {
-          newSound.play();
-        } catch (e) {
-          console.error('Auto-play failed:', e);
-          setIsLoading(false);
-        }
+        try { newSound.play(); } catch (e) { setIsLoading(false); }
       },
-      onplay: () => {
-        if (currentSongIdRef.current === song.id) {
-          console.log('▶️ Song playing:', song.name);
-          setIsPlaying(true);
-          setIsLoading(false);
-        }
-      },
-      onpause: () => {
-        console.log('⏸️ Song paused');
-        setIsPlaying(false);
-      },
-      onend: () => {
-        console.log('⏹️ Song ended');
-        setIsPlaying(false);
-      },
-      onstop: () => {
-        console.log('🛑 Song stopped');
-        setIsPlaying(false);
-      },
+      onplay: () => { if (currentSongIdRef.current === song.id) { setIsPlaying(true); setIsLoading(false); } },
+      onpause: () => setIsPlaying(false),
+      onend: () => setIsPlaying(false),
+      onstop: () => setIsPlaying(false),
       onloaderror: (id, err) => {
-        // Only show error if this is still the active song AND not aborted
         if (currentSongIdRef.current === song.id && !signal.aborted) {
-          console.error('❌ Audio Load Error:', err);
-          
-          const errorMsg = String(err || 'unknown error').toLowerCase();
+          const errorMsg = String(err || '').toLowerCase();
           const isCodecError = errorMsg.includes('codec') || errorMsg.includes('format');
-          
-          // If it's a codec error and we haven't retried, try again with different settings
           if (isCodecError && retryCount < 1) {
-            console.warn('⚠️ Codec error detected, retrying with fallback settings...');
-            setTimeout(() => {
-              if (currentSongIdRef.current === song.id) {
-                playSong(song, url, false, retryCount + 1);
-              }
-            }, 500);
+            setTimeout(() => { if (currentSongIdRef.current === song.id) playSong(song, url, false, retryCount + 1); }, 500);
             return;
           }
-          
-          // Only show error if we're already loading (not a retry scenario)
-          if (isLoading) {
-            showToast(`Could not load audio. Try another song.`, 'error');
-            setIsLoading(false);
-            setIsPlaying(false);
-          }
-        }
-      },
-      onplayerror: (id, err) => {
-        console.error('❌ Play Error:', err);
-        if (currentSongIdRef.current === song.id && isLoading) {
-          showToast('Could not play audio', 'error');
+          showToast('Could not load audio. Try another song.', 'error');
           setIsLoading(false);
           setIsPlaying(false);
         }
-      }
+      },
+      onplayerror: () => { showToast('Could not play audio', 'error'); setIsLoading(false); setIsPlaying(false); }
     });
-    
-    // Store the new sound
     soundRef.current = newSound;
     setSound(newSound);
     setCurrentSong(song);
-    
-    // Clear any previous timeout
-    if (loadTimeoutRef.current) {
-      clearTimeout(loadTimeoutRef.current);
-    }
-    
-    // Fallback: If onload doesn't fire within 5 seconds, try playing anyway
     loadTimeoutRef.current = setTimeout(() => {
-      if (soundRef.current === newSound && currentSongIdRef.current === song.id && isLoading) {
-        console.warn('⚠️ onload did not fire within 5s, attempting to play anyway...');
+      if (soundRef.current === newSound && currentSongIdRef.current === song.id) {
         try {
           if (newSound.state() === 'loaded' || newSound.state() === 'loading') {
             newSound.play();
             setIsLoading(false);
           }
-        } catch (e) {
-          console.error('Fallback play failed:', e);
-        }
+        } catch (e) {}
       }
     }, 5000);
-    
-    if (emit) {
-      emitPlaySong(roomId, song, url, 0);
-    }
+    if (emit) emitPlaySong(roomId, song, url, 0);
   };
 
   const handlePlaySong = (song) => {
     const audioUrlObj = selectBestAudioUrl(song);
-    
-    if (!audioUrlObj) {
-      showToast('No audio available for this song', 'error');
-      console.error('No valid download URL found for song:', song);
-      return;
-    }
-    
-    console.log(`Playing ${song.name} at ${audioUrlObj.quality}`);
+    if (!audioUrlObj) { showToast('No audio available for this song', 'error'); return; }
     playSong(song, audioUrlObj.url, true);
   };
 
   const handlePlayPause = () => {
-    if (!soundRef.current || isLoading) {
-      console.log('⚠️ Cannot toggle play/pause - sound not ready or loading');
-      return;
-    }
-    
+    if (!soundRef.current || isLoading) return;
     try {
       const isCurrentlyPlaying = soundRef.current.playing();
-      
       if (isCurrentlyPlaying) {
-        // PAUSE - directly pause the Howl instance
-        console.log(`⏸️ Pausing at: ${soundRef.current.seek().toFixed(2)}s`);
         pausePositionRef.current = soundRef.current.seek() || 0;
         soundRef.current.pause();
         setIsPlaying(false);
-        
-        // Notify other users in the room
-        const seekPos = pausePositionRef.current;
-        emitPauseSong(roomId, seekPos);
-        
+        emitPauseSong(roomId, pausePositionRef.current);
       } else {
-        // RESUME - directly resume from the paused position
-        console.log(`▶️ Resuming from: ${pausePositionRef.current.toFixed(2)}s`);
-        
-        // Make absolutely sure we're at the right position
         const resumePos = pausePositionRef.current || 0;
-        if (Math.abs(soundRef.current.seek() - resumePos) > 1.0) {
-          console.log(`🔄 Correcting seek position: ${soundRef.current.seek().toFixed(2)}s → ${resumePos.toFixed(2)}s`);
-          soundRef.current.seek(resumePos);
-        }
-        
+        if (Math.abs(soundRef.current.seek() - resumePos) > 1.0) soundRef.current.seek(resumePos);
         soundRef.current.play();
         setIsPlaying(true);
-        
-        // Notify other users in the room
         emitResumeSong(roomId, resumePos);
       }
     } catch (e) {
-      console.error('❌ Play/Pause error:', e);
       setIsPlaying(false);
       showToast('Error controlling playback', 'error');
     }
@@ -393,16 +258,36 @@ export default function Room() {
             </div>
             <span style={{fontFamily:"'Syne',system-ui,sans-serif", fontWeight:700, fontSize:'16px', color:'white'}}>Sync<span style={{background:'linear-gradient(135deg,#a78bfa,#f472b6)', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent', backgroundClip:'text'}}>Tune</span></span>
           </div>
+
           <div style={{display:'flex', alignItems:'center', gap:'12px'}}>
             <div style={{display:'flex', alignItems:'center', gap:'6px', padding:'4px 10px', background:'rgba(255,255,255,0.04)', borderRadius:'99px', border:'1px solid rgba(255,255,255,0.07)'}}>
               <div style={{width:'6px', height:'6px', borderRadius:'50%', background:'#34d399'}} />
               <span style={{fontSize:'12px', color:'#8b8aa8', fontFamily:'monospace', letterSpacing:'0.05em'}}>{roomId}</span>
             </div>
+
+            {/* Chat toggle */}
             <button
               onClick={() => setChatOpen(p => !p)}
               style={{background:'none', border:'none', cursor:'pointer', padding:'6px', color: chatOpen ? '#a78bfa' : '#55546a', display:'flex', alignItems:'center', justifyContent:'center', transition:'color 0.2s'}}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            </button>
+
+            {/* ✅ Exit Room Button */}
+            <button
+              onClick={handleExitRoom}
+              style={{
+                display:'flex', alignItems:'center', gap:'6px',
+                padding:'6px 12px', borderRadius:'8px', border:'1px solid rgba(255,80,80,0.3)',
+                background:'rgba(255,80,80,0.1)', color:'#ff6b6b',
+                cursor:'pointer', fontSize:'12px', fontWeight:600,
+                transition:'all 0.2s'
+              }}
+              onMouseEnter={e => e.currentTarget.style.background='rgba(255,80,80,0.2)'}
+              onMouseLeave={e => e.currentTarget.style.background='rgba(255,80,80,0.1)'}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+              Exit
             </button>
           </div>
         </div>
@@ -441,7 +326,7 @@ export default function Room() {
             {/* Chat */}
             {chatOpen && (
               <div style={{flex:1, overflow:'hidden', display:'flex', flexDirection:'column'}}>
-                <Chat roomId={roomId} userName={userName} />
+                <Chat roomId={roomId} userName={userName} chatHistory={chatHistory} />
               </div>
             )}
           </div>
