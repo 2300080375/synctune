@@ -124,9 +124,7 @@ export default function Room() {
     // ✅ Load chat history from room state
     onRoomState(({ users, chatHistory }) => {
       setUsers(users);
-      if (chatHistory && chatHistory.length > 0) {
-        setChatHistory(chatHistory.map(msg => ({ ...msg, type: 'chat' })));
-      }
+      setChatHistory(chatHistory || []); // ✅ always set, even if empty
     });
 
     onUsersUpdated(setUsers);

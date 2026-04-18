@@ -7,11 +7,12 @@ export default function Chat({ roomId, userName, chatHistory = [] }) {
   const bottomRef = useRef(null);
 
   // ✅ Load chat history when joining room
+  // ✅ Load chat history when joining room
   useEffect(() => {
-    if (chatHistory.length > 0) {
+    if (chatHistory && chatHistory.length > 0) {
       setMessages(chatHistory.map(msg => ({ ...msg, type: 'chat' })));
     }
-  }, [chatHistory]);
+  },  [chatHistory]); // dependency array lo chatHistory undi — change aite reload avutundi
 
   useEffect(() => {
     onChatMessage(msg => setMessages(p => [...p, { ...msg, type: 'chat' }]));
