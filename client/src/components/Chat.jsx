@@ -68,26 +68,6 @@ const STICKER_PACKS = [
   },
 ];
 
-// ─── GIF fetch — proxied through server to avoid CORS on mobile ──────────────
-const GIF_PROXY = `${import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001'}/api/gifs`;
-
-const parseGifs = (results) =>
-  (results || []).map(r => ({
-    id: r.id,
-    url: r.media_formats?.gif?.url || r.media_formats?.tinygif?.url,
-    preview: r.media_formats?.tinygif?.url || r.media_formats?.nanogif?.url || r.media_formats?.gif?.url,
-    title: r.content_description,
-  })).filter(g => g.url);
-
-async function fetchGifs(query) {
-  const params = new URLSearchParams({ limit: '24', ...(query ? { q: query } : {}) });
-  const res = await fetch(`${GIF_PROXY}?${params}`);
-  if (!res.ok) throw new Error(`GIF proxy ${res.status}`);
-  const data = await res.json();
-  return parseGifs(data.results);
-}
-
-
 // ─── Message Content Renderer ─────────────────────────────────────────────────
 function MessageContent({ msg }) {
   if (msg.msgType === 'sticker') {
@@ -102,9 +82,6 @@ function MessageContent({ msg }) {
         {sticker?.emoji || '🎵'}
       </div>
     );
-  }
-  if (msg.msgType === 'gif') {
-    return <img src={msg.gifUrl} alt={msg.gifTitle || 'GIF'} style={{ maxWidth: '180px', borderRadius: '12px', display: 'block' }} loading="lazy" />;
   }
   if (msg.msgType === 'upload-image') {
     return <img src={msg.uploadData} alt={msg.uploadName || 'image'} style={{ maxWidth: '200px', maxHeight: '200px', borderRadius: '12px', display: 'block', objectFit: 'cover' }} loading="lazy" />;
@@ -121,22 +98,16 @@ function MessageContent({ msg }) {
 // ─── Main Chat Component ──────────────────────────────────────────────────────
 export default function Chat({ roomId, userName, messages = [], onNewMessage }) {
   const [input, setInput]             = useState('');
-  // panel: null | 'emoji' | 'attach'
-  const [panel, setPanel]             = useState(null);
-  // attachTab: 'sticker' | 'gif' | 'image' | 'video'
-  const [attachTab, setAttachTab]     = useState('sticker');
+  const [panel, setPanel]             = useState(null); // null | 'emoji' | 'attach'
+  const [attachTab, setAttachTab]     = useState('sticker'); // 'sticker' | 'image' | 'video'
   const [emojiCat, setEmojiCat]       = useState(0);
   const [stickerPack, setStickerPack] = useState(0);
-  const [gifQuery, setGifQuery]       = useState('');
-  const [gifs, setGifs]               = useState([]);
-  const [gifsLoading, setGifsLoading] = useState(false);
-  const [gifError, setGifError]       = useState('');
   const [uploadError, setUploadError] = useState('');
 
-  const bottomRef   = useRef(null);
-  const msgBoxRef   = useRef(null);
-  const inputRef    = useRef(null);
-  const sheetRef    = useRef(null);
+  const bottomRef    = useRef(null);
+  const msgBoxRef    = useRef(null);
+  const inputRef     = useRef(null);
+  const sheetRef     = useRef(null);
   const fileInputRef = useRef(null);
 
   const [thumbH, setThumbH]     = useState(0);
@@ -154,6 +125,7 @@ export default function Chat({ roomId, userName, messages = [], onNewMessage }) 
     const t = (el.scrollTop / (el.scrollHeight - el.clientHeight)) * (el.clientHeight - h);
     setThumbH(h); setThumbTop(isNaN(t) ? 0 : t);
   };
+
   useEffect(() => {
     const el = msgBoxRef.current; if (!el) return;
     el.addEventListener('scroll', updateThumb); updateThumb();
@@ -171,34 +143,11 @@ export default function Chat({ roomId, userName, messages = [], onNewMessage }) 
     return () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
   }, [dragging]);
 
-  // Close sheet on outside click
   useEffect(() => {
     const h = (e) => { if (sheetRef.current && !sheetRef.current.contains(e.target)) setPanel(null); };
     if (panel) document.addEventListener('mousedown', h);
     return () => document.removeEventListener('mousedown', h);
   }, [panel]);
-
-  // Auto-load GIFs when GIF tab opens
-  useEffect(() => {
-    if (panel === 'attach' && attachTab === 'gif' && gifs.length === 0 && !gifsLoading) {
-      loadGifs('');
-    }
-  }, [panel, attachTab]);
-
-  const loadGifs = async (q) => {
-    setGifsLoading(true); setGifError('');
-    try {
-      const g = await fetchGifs(q);
-      setGifs(g);
-      if (g.length === 0) setGifError('No GIFs found. Try a different search.');
-    } catch {
-      setGifError('Could not load GIFs. Check your connection and try again.');
-    } finally {
-      setGifsLoading(false);
-    }
-  };
-
-  const handleGifSearch = (e) => { e?.preventDefault(); loadGifs(gifQuery); };
 
   const openAttach = () => { setPanel(p => p === 'attach' ? null : 'attach'); setAttachTab('sticker'); };
   const openEmoji  = () => { setPanel(p => p === 'emoji'  ? null : 'emoji'); };
@@ -222,12 +171,6 @@ export default function Chat({ roomId, userName, messages = [], onNewMessage }) 
   const sendSticker = (sticker) => {
     onNewMessage(buildMsg({ text: '', msgType: 'sticker', stickerId: sticker.id }));
     emitChatMessage(roomId, userName, '', 'sticker', { stickerId: sticker.id });
-    setPanel(null);
-  };
-
-  const sendGif = (gif) => {
-    onNewMessage(buildMsg({ text: '', msgType: 'gif', gifUrl: gif.url, gifTitle: gif.title }));
-    emitChatMessage(roomId, userName, '', 'gif', { gifUrl: gif.url, gifTitle: gif.title });
     setPanel(null);
   };
 
@@ -255,7 +198,6 @@ export default function Chat({ roomId, userName, messages = [], onNewMessage }) 
   };
 
   const showThumb = thumbH < (msgBoxRef.current?.clientHeight || 0);
-  const sheetH = (panel === 'attach' && attachTab === 'gif') ? '330px' : '280px';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden', position: 'relative' }}>
@@ -268,8 +210,6 @@ export default function Chat({ roomId, userName, messages = [], onNewMessage }) 
         .at-tab{padding:9px 12px;border:none;background:transparent;font-size:11px;font-weight:700;cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;transition:color .15s,border-color .15s;letter-spacing:.3px}
         .at-tab.on{color:#a78bfa;border-bottom-color:#a78bfa}
         .at-tab:not(.on){color:#55546a}
-        .gif-card{border-radius:8px;overflow:hidden;margin-bottom:6px;cursor:pointer;break-inside:avoid;border:2px solid transparent;transition:border-color .15s}
-        .gif-card:active{border-color:#a78bfa}
         .s-btn{border:none;border-radius:14px;aspect-ratio:1;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:30px;box-shadow:0 2px 8px rgba(0,0,0,.3);transition:transform .15s,box-shadow .15s}
         .s-btn:active{transform:scale(.92)}
         .e-btn{background:none;border:none;cursor:pointer;font-size:22px;padding:5px;border-radius:8px;line-height:1}
@@ -285,7 +225,7 @@ export default function Chat({ roomId, userName, messages = [], onNewMessage }) 
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '10px', color: '#55546a' }}>
               <div style={{ fontSize: '30px' }}>💬</div>
               <p style={{ fontSize: '13px', margin: 0 }}>Start the conversation!</p>
-              <p style={{ fontSize: '11px', color: '#3d3c52', margin: 0 }}>Stickers • GIFs • Images • Videos</p>
+              <p style={{ fontSize: '11px', color: '#3d3c52', margin: 0 }}>Stickers • Emojis • Images</p>
             </div>
           ) : messages.map((msg, i) => {
             if (msg.type === 'system') return (
@@ -294,7 +234,7 @@ export default function Chat({ roomId, userName, messages = [], onNewMessage }) 
               </div>
             );
             const isOwn  = msg.isOwn || msg.user === userName;
-            const isMedia = ['sticker','gif','upload-image','upload-gif','upload-video'].includes(msg.msgType);
+            const isMedia = ['sticker','upload-image','upload-gif','upload-video'].includes(msg.msgType);
             return (
               <div key={i} style={{ display: 'flex', gap: '8px', justifyContent: isOwn ? 'flex-end' : 'flex-start', animation: 'msgIn 0.18s ease' }}>
                 {!isOwn && (
@@ -340,7 +280,7 @@ export default function Chat({ roomId, userName, messages = [], onNewMessage }) 
 
       {/* ── BOTTOM SHEET ── */}
       {panel && (
-        <div ref={sheetRef} style={{ position: 'absolute', bottom: '58px', left: 0, right: 0, background: '#0e0e1a', borderTop: '1px solid rgba(255,255,255,0.08)', borderRadius: '18px 18px 0 0', boxShadow: '0 -10px 40px rgba(0,0,0,0.65)', zIndex: 50, height: sheetH, display: 'flex', flexDirection: 'column', overflow: 'hidden', animation: 'sheetUp 0.22s cubic-bezier(.32,1,.4,1)' }}>
+        <div ref={sheetRef} style={{ position: 'absolute', bottom: '58px', left: 0, right: 0, background: '#0e0e1a', borderTop: '1px solid rgba(255,255,255,0.08)', borderRadius: '18px 18px 0 0', boxShadow: '0 -10px 40px rgba(0,0,0,0.65)', zIndex: 50, height: '280px', display: 'flex', flexDirection: 'column', overflow: 'hidden', animation: 'sheetUp 0.22s cubic-bezier(.32,1,.4,1)' }}>
 
           {/* ── EMOJI ── */}
           {panel === 'emoji' && <>
@@ -359,13 +299,11 @@ export default function Chat({ roomId, userName, messages = [], onNewMessage }) 
             </div>
           </>}
 
-          {/* ── ATTACH ── */}
+          {/* ── ATTACH — Stickers | Image | Video (NO GIF) ── */}
           {panel === 'attach' && <>
-            {/* Tab bar: Stickers | GIFs | Image | Video */}
-            <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.07)', flexShrink: 0, padding: '0 4px', overflowX: 'auto' }}>
+            <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.07)', flexShrink: 0, padding: '0 4px' }}>
               {[
                 { id: 'sticker', label: '🎭 Stickers' },
-                { id: 'gif',     label: '🎞 GIFs' },
                 { id: 'image',   label: '🖼 Image' },
                 { id: 'video',   label: '🎬 Video' },
               ].map(t => (
@@ -392,43 +330,6 @@ export default function Chat({ roomId, userName, messages = [], onNewMessage }) 
               </div>
             </>}
 
-            {/* GIFs */}
-            {attachTab === 'gif' && <>
-              <div style={{ display: 'flex', gap: '8px', padding: '8px 10px', flexShrink: 0 }}>
-                <input
-                  value={gifQuery} onChange={e => setGifQuery(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && handleGifSearch()}
-                  placeholder="Search GIFs..."
-                  style={{ flex: 1, padding: '8px 12px', background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '10px', color: '#f1f0ff', fontSize: '13px', outline: 'none', fontFamily: 'inherit' }}
-                />
-                <button onClick={handleGifSearch}
-                  style={{ padding: '8px 14px', borderRadius: '10px', border: 'none', background: 'linear-gradient(135deg,#7c3aed,#a855f7)', color: 'white', fontSize: '13px', fontWeight: 700, cursor: 'pointer', flexShrink: 0 }}>
-                  🔍
-                </button>
-              </div>
-              <div className="cs" style={{ flex: 1, overflowY: 'auto', padding: '0 10px 8px' }}>
-                {gifsLoading ? (
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '120px', color: '#55546a', gap: '10px', fontSize: '13px' }}>
-                    <div style={{ width: '16px', height: '16px', border: '2px solid rgba(167,139,250,0.3)', borderTopColor: '#a78bfa', borderRadius: '50%', animation: 'spin 0.7s linear infinite', flexShrink: 0 }} />
-                    Loading GIFs...
-                  </div>
-                ) : gifError ? (
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '120px', color: '#f87171', fontSize: '12px', textAlign: 'center', padding: '0 16px' }}>{gifError}</div>
-                ) : (
-                  <>
-                    <div style={{ columns: '2', columnGap: '6px' }}>
-                      {gifs.map(gif => (
-                        <div key={gif.id} className="gif-card" onClick={() => sendGif(gif)}>
-                          <img src={gif.preview} alt={gif.title || 'gif'} style={{ width: '100%', display: 'block', borderRadius: '6px' }} loading="lazy" />
-                        </div>
-                      ))}
-                    </div>
-                    {gifs.length > 0 && <div style={{ textAlign: 'center', padding: '6px 0 2px', fontSize: '10px', color: '#3d3c52' }}>Powered by Tenor</div>}
-                  </>
-                )}
-              </div>
-            </>}
-
             {/* Image upload */}
             {attachTab === 'image' && (
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '14px', padding: '20px' }}>
@@ -448,7 +349,7 @@ export default function Chat({ roomId, userName, messages = [], onNewMessage }) 
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '14px', padding: '20px' }}>
                 <div style={{ fontSize: '44px' }}>🎬</div>
                 <p style={{ color: '#c4c3de', fontSize: '14px', fontWeight: 600, margin: 0, textAlign: 'center' }}>Send a short video</p>
-                <p style={{ color: '#55546a', fontSize: '12px', margin: 0, textAlign: 'center' }}>MP4, WEBM, MOV — max 5MB{'\n'}Plays as a looping sticker</p>
+                <p style={{ color: '#55546a', fontSize: '12px', margin: 0, textAlign: 'center' }}>MP4, WEBM, MOV — max 5MB</p>
                 <button
                   onClick={() => { fileInputRef.current.accept = 'video/mp4,video/webm,video/quicktime'; fileInputRef.current.click(); }}
                   style={{ padding: '11px 28px', borderRadius: '12px', border: 'none', background: 'linear-gradient(135deg,#ec4899,#8b5cf6)', color: 'white', fontWeight: 700, fontSize: '14px', cursor: 'pointer', boxShadow: '0 4px 18px rgba(236,72,153,0.35)' }}>
@@ -460,12 +361,10 @@ export default function Chat({ roomId, userName, messages = [], onNewMessage }) 
         </div>
       )}
 
-      {/* ── INPUT BAR — WhatsApp style ── */}
+      {/* ── INPUT BAR ── */}
       <div style={{ padding: '8px 10px', borderTop: '1px solid rgba(255,255,255,0.05)', flexShrink: 0, background: '#0c0c18' }}>
-        {/* Hidden file input */}
         <input ref={fileInputRef} type="file" style={{ display: 'none' }} onChange={handleFileSelect} />
 
-        {/* Error toast */}
         {uploadError && (
           <div style={{ marginBottom: '6px', padding: '6px 12px', background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: '8px', color: '#fca5a5', fontSize: '11px', textAlign: 'center' }}>
             {uploadError}
@@ -473,7 +372,6 @@ export default function Chat({ roomId, userName, messages = [], onNewMessage }) 
         )}
 
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-
           {/* + button */}
           <button onClick={openAttach} title="Attachments"
             style={{ width: '38px', height: '38px', minWidth: '38px', borderRadius: '50%', border: 'none', background: panel === 'attach' ? 'linear-gradient(135deg,#7c3aed,#a855f7)' : 'rgba(255,255,255,0.08)', color: 'white', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, transition: 'background 0.2s, transform 0.2s', transform: panel === 'attach' ? 'rotate(45deg)' : 'rotate(0deg)' }}>
@@ -493,7 +391,6 @@ export default function Chat({ roomId, userName, messages = [], onNewMessage }) 
               onFocus={() => setPanel(null)}
               style={{ flex: 1, minWidth: 0, padding: '10px 0', background: 'transparent', border: 'none', color: '#f1f0ff', fontSize: '14px', outline: 'none', fontFamily: 'inherit' }}
             />
-            {/* Emoji trigger inside pill */}
             <button onClick={openEmoji} title="Emoji"
               style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: '6px', color: panel === 'emoji' ? '#a78bfa' : '#55546a', display: 'flex', alignItems: 'center', flexShrink: 0, transition: 'color 0.15s' }}>
               <span style={{ fontSize: '20px', lineHeight: 1 }}>😊</span>
