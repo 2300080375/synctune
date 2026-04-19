@@ -67,9 +67,19 @@ function UsernameModal({ onSubmit }) {
 export default function Room() {
   const { roomId } = useParams();
   const navigate = useNavigate();
-  const [userId] = useState(() => `user_${Date.now()}`);
-  const [userName, setUserName] = useState('');
-  const [showNameModal, setShowNameModal] = useState(true);
+
+  // ✅ FIX: Persist userId & userName in sessionStorage so page refresh doesn't reset them
+  const [userId] = useState(() => {
+    const existing = sessionStorage.getItem('userId');
+    if (existing) return existing;
+    const newId = `user_${Date.now()}`;
+    sessionStorage.setItem('userId', newId);
+    return newId;
+  });
+
+  const [userName, setUserName] = useState(() => sessionStorage.getItem('userName') || '');
+  const [showNameModal, setShowNameModal] = useState(() => !sessionStorage.getItem('userName'));
+
   const [users, setUsers] = useState([]);
   const [songs, setSongs] = useState([]);
   const [currentSong, setCurrentSong] = useState(null);
@@ -89,9 +99,17 @@ export default function Room() {
   const loadTimeoutRef = useRef(null);
   const roomIdRef = useRef(roomId);
 
-  const handleNameSubmit = (name) => { setUserName(name); setShowNameModal(false); };
+  // ✅ FIX: Save userName to sessionStorage when set
+  const handleNameSubmit = (name) => {
+    sessionStorage.setItem('userName', name);
+    setUserName(name);
+    setShowNameModal(false);
+  };
 
   const handleExitRoom = () => {
+    // ✅ FIX: Clear session on intentional exit so next visit asks for name again
+    sessionStorage.removeItem('userName');
+    sessionStorage.removeItem('userId');
     if (soundRef.current) {
       try { soundRef.current.stop(); soundRef.current.unload(); soundRef.current = null; } catch (e) {}
     }
