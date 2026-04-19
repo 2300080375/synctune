@@ -21,6 +21,7 @@ class RoomManager {
         timestamp: 0,
         isPlaying: false,
         chatHistory: [],
+        queue: [],
         createdAt: Date.now(),
       });
       return true;
@@ -62,7 +63,6 @@ class RoomManager {
     if (!this.rooms.has(roomId)) return;
     const room = this.rooms.get(roomId);
     room.chatHistory.push(message);
-    // Keep only last 50 messages
     if (room.chatHistory.length > 50) {
       room.chatHistory.shift();
     }
@@ -70,6 +70,43 @@ class RoomManager {
 
   getChatHistory(roomId) {
     return this.rooms.get(roomId)?.chatHistory || [];
+  }
+
+  // ✅ Queue methods
+  addToQueue(roomId, song) {
+    if (!this.rooms.has(roomId)) return;
+    const room = this.rooms.get(roomId);
+    if (!room.queue) room.queue = [];
+    room.queue.push(song);
+  }
+
+  removeFromQueue(roomId, index) {
+    if (!this.rooms.has(roomId)) return;
+    const room = this.rooms.get(roomId);
+    if (!room.queue) return;
+    room.queue.splice(index, 1);
+  }
+
+  playFromQueue(roomId, index) {
+    if (!this.rooms.has(roomId)) return null;
+    const room = this.rooms.get(roomId);
+    if (!room.queue || room.queue.length === 0) return null;
+    const song = room.queue[index];
+    room.queue.splice(index, 1);
+    return song;
+  }
+
+  // ✅ Auto play next song from queue when song ends
+  playNextFromQueue(roomId) {
+    if (!this.rooms.has(roomId)) return null;
+    const room = this.rooms.get(roomId);
+    if (!room.queue || room.queue.length === 0) return null;
+    const song = room.queue.shift();
+    return song;
+  }
+
+  getQueue(roomId) {
+    return this.rooms.get(roomId)?.queue || [];
   }
 
   getRoom(roomId) {

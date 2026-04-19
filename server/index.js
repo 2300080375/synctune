@@ -8,7 +8,6 @@ const roomManager = require('./roomManager');
 const app = express();
 const server = http.createServer(app);
 
-// ✅ Socket.IO with CORS
 const io = new Server(server, {
   cors: {
     origin: "*",
@@ -22,18 +21,14 @@ app.use(express.json());
 const PORT = 3001;
 
 ////////////////////////////////////////////////////////////
-// 🔥 AUDIO PROXY (ENHANCED)
+// 🔥 AUDIO PROXY
 ////////////////////////////////////////////////////////////
 
 app.get('/api/audio', (req, res) => {
   const { url } = req.query;
-
-  if (!url) {
-    return res.status(400).json({ error: 'URL is required' });
-  }
+  if (!url) return res.status(400).json({ error: 'URL is required' });
 
   const audioUrl = decodeURIComponent(url);
-
   console.log("🎵 Streaming audio:", audioUrl.substring(0, 80));
 
   const request = https.get(audioUrl, {
@@ -46,22 +41,19 @@ app.get('/api/audio', (req, res) => {
     },
     timeout: 30000
   }, (audioRes) => {
-    
     const originalContentType = audioRes.headers['content-type'];
     console.log(`✅ Audio response - Status: ${audioRes.statusCode}, Original Content-Type: ${originalContentType}, Size: ${audioRes.headers['content-length']}`);
 
     if (audioRes.statusCode === 404) {
-      console.error("❌ Audio URL returned 404 - URL may be invalid or expired");
+      console.error("❌ Audio URL returned 404");
       return res.status(404).json({ error: 'Audio not found' });
     }
-
     if (audioRes.statusCode >= 400) {
       console.error(`❌ Audio URL returned ${audioRes.statusCode}`);
       return res.status(audioRes.statusCode).json({ error: `Server returned ${audioRes.statusCode}` });
     }
 
     const contentType = 'audio/mpeg';
-    
     console.log(`📤 Sending as: ${contentType}`);
 
     res.writeHead(audioRes.statusCode, {
@@ -76,33 +68,25 @@ app.get('/api/audio', (req, res) => {
 
     audioRes.on('error', (err) => {
       console.error("❌ Audio stream error:", err.message);
-      if (!res.headersSent) {
-        res.status(500).json({ error: 'Stream error' });
-      } else {
-        res.end();
-      }
+      if (!res.headersSent) res.status(500).json({ error: 'Stream error' });
+      else res.end();
     });
-
   });
 
   request.on('error', (err) => {
     console.error("❌ Audio Proxy Error:", err.message);
-    if (!res.headersSent) {
-      res.status(500).json({ error: 'Failed to fetch audio' });
-    }
+    if (!res.headersSent) res.status(500).json({ error: 'Failed to fetch audio' });
   });
 
   request.on('timeout', () => {
     console.error("❌ Audio request timeout");
     request.destroy();
-    if (!res.headersSent) {
-      res.status(504).json({ error: 'Audio request timeout' });
-    }
+    if (!res.headersSent) res.status(504).json({ error: 'Audio request timeout' });
   });
 });
 
 ////////////////////////////////////////////////////////////
-// 🔍 SEARCH PROXY (MULTIPLE MIRRORS)
+// 🔍 SEARCH PROXY
 ////////////////////////////////////////////////////////////
 
 const SAAVN_MIRRORS = [
@@ -114,53 +98,35 @@ const SAAVN_MIRRORS = [
 function fetchFromMirror(mirror, query) {
   return new Promise((resolve, reject) => {
     const path = `/api/search/songs?query=${encodeURIComponent(query)}&limit=20`;
-
     const options = {
       hostname: mirror,
       path,
       method: 'GET',
-      headers: {
-        'User-Agent': 'Mozilla/5.0',
-        'Accept': 'application/json'
-      },
+      headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' },
       timeout: 8000,
     };
 
     const req = https.request(options, (res) => {
-      if (res.statusCode !== 200) {
-        return reject(new Error(`Mirror ${mirror} returned ${res.statusCode}`));
-      }
-
+      if (res.statusCode !== 200) return reject(new Error(`Mirror ${mirror} returned ${res.statusCode}`));
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
-        try {
-          resolve(JSON.parse(data));
-        } catch {
-          reject(new Error('Invalid JSON'));
-        }
+        try { resolve(JSON.parse(data)); }
+        catch { reject(new Error('Invalid JSON')); }
       });
     });
 
     req.on('error', reject);
-    req.on('timeout', () => {
-      req.destroy();
-      reject(new Error('Timeout'));
-    });
-
+    req.on('timeout', () => { req.destroy(); reject(new Error('Timeout')); });
     req.end();
   });
 }
 
 app.get('/api/search', async (req, res) => {
   const { query } = req.query;
-
-  if (!query) {
-    return res.status(400).json({ error: 'Query required' });
-  }
+  if (!query) return res.status(400).json({ error: 'Query required' });
 
   console.log("🔍 Search:", query);
-
   for (const mirror of SAAVN_MIRRORS) {
     try {
       const data = await fetchFromMirror(mirror, query);
@@ -170,7 +136,6 @@ app.get('/api/search', async (req, res) => {
       console.log("❌ Mirror failed:", mirror);
     }
   }
-
   res.status(500).json({ error: 'All mirrors failed' });
 });
 
@@ -184,35 +149,28 @@ io.on('connection', (socket) => {
   console.log("🔌 Connected:", socket.id);
 
   socket.on('join-room', ({ roomId, userId, userName }) => {
-    if (!roomManager.roomExists(roomId)) {
-      roomManager.createRoom(roomId);
-    }
+    if (!roomManager.roomExists(roomId)) roomManager.createRoom(roomId);
 
     const room = roomManager.joinRoom(roomId, userId, userName);
-
     socketToUser.set(socket.id, { roomId, userId });
     socket.join(roomId);
 
     socket.emit('room-state', {
-
       users: room.users,
       currentSong: room.currentSong,
       currentUrl: room.currentUrl,
       timestamp: room.timestamp,
       isPlaying: room.isPlaying,
-      chatHistory: roomManager.getChatHistory(roomId)  // ✅ add this
+      chatHistory: roomManager.getChatHistory(roomId),
+      queue: roomManager.getQueue(roomId), // ✅ send queue on join
     });
+
     io.to(roomId).emit('users-updated', room.users);
   });
 
   socket.on('play-song', ({ roomId, songData, playUrl, timestamp }) => {
     roomManager.updateSongState(roomId, songData, playUrl, timestamp, true);
-
-    io.to(roomId).emit('play-song', {
-      songData,
-      playUrl,
-      timestamp
-    });
+    io.to(roomId).emit('play-song', { songData, playUrl, timestamp });
   });
 
   socket.on('pause-song', ({ roomId, timestamp }) => {
@@ -239,24 +197,65 @@ io.on('connection', (socket) => {
     }
   });
 
-  // ✅ CHAT HANDLER — broadcast to all users in room
+  // ✅ CHAT
   socket.on('chat-message', ({ roomId, user, text, time }) => {
-
     const message = { user, text, time };
     roomManager.addChatMessage(roomId, message);
     socket.to(roomId).emit('chat-message', message);
+  });
+
+  // ✅ QUEUE — Add song
+  socket.on('add-to-queue', ({ roomId, song }) => {
+    roomManager.addToQueue(roomId, song);
+    io.to(roomId).emit('queue-updated', roomManager.getQueue(roomId));
+    console.log(`🎵 Queue add [${roomId}]:`, song.name);
+  });
+
+  // ✅ QUEUE — Remove song
+  socket.on('remove-from-queue', ({ roomId, index }) => {
+    roomManager.removeFromQueue(roomId, index);
+    io.to(roomId).emit('queue-updated', roomManager.getQueue(roomId));
+  });
+
+  // ✅ QUEUE — Play specific song from queue
+  socket.on('play-from-queue', ({ roomId, index }) => {
+    const song = roomManager.playFromQueue(roomId, index);
+    if (song) {
+      const audioUrl = song.downloadUrl?.find(d => d.quality === '320kbps')?.url
+        || song.downloadUrl?.find(d => d.quality === '160kbps')?.url
+        || song.downloadUrl?.[0]?.url;
+      if (audioUrl) {
+        roomManager.updateSongState(roomId, song, audioUrl, 0, true);
+        io.to(roomId).emit('play-song', { songData: song, playUrl: audioUrl, timestamp: 0 });
+        io.to(roomId).emit('queue-updated', roomManager.getQueue(roomId));
+        console.log(`▶️ Playing from queue [${roomId}]:`, song.name);
+      }
+    }
+  });
+
+  // ✅ QUEUE — Song ended, auto play next
+  socket.on('song-ended', ({ roomId }) => {
+    const nextSong = roomManager.playNextFromQueue(roomId);
+    if (nextSong) {
+      const audioUrl = nextSong.downloadUrl?.find(d => d.quality === '320kbps')?.url
+        || nextSong.downloadUrl?.find(d => d.quality === '160kbps')?.url
+        || nextSong.downloadUrl?.[0]?.url;
+      if (audioUrl) {
+        roomManager.updateSongState(roomId, nextSong, audioUrl, 0, true);
+        io.to(roomId).emit('play-song', { songData: nextSong, playUrl: audioUrl, timestamp: 0 });
+        io.to(roomId).emit('queue-updated', roomManager.getQueue(roomId));
+        console.log(`⏭️ Auto next [${roomId}]:`, nextSong.name);
+      }
+    }
   });
 
   socket.on('disconnect', () => {
     const userInfo = socketToUser.get(socket.id);
     if (userInfo) {
       const room = roomManager.leaveRoom(userInfo.roomId, userInfo.userId);
-      if (room) {
-        io.to(userInfo.roomId).emit('users-updated', room.users);
-      }
+      if (room) io.to(userInfo.roomId).emit('users-updated', room.users);
       socketToUser.delete(socket.id);
     }
-
     console.log("❌ Disconnected:", socket.id);
   });
 });

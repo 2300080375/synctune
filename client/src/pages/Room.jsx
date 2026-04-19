@@ -5,12 +5,14 @@ import SearchBar from '../components/SearchBar';
 import SongList from '../components/SongList';
 import Player from '../components/Player';
 import Chat from '../components/Chat';
+import Queue from '../components/Queue';
 import { showToast } from '../components/Toast';
 import {
   getSocket, joinRoom, leaveRoom,
-  emitPlaySong, emitPauseSong, emitResumeSong,
-  onRoomState, onUsersUpdated, onPlaySong, onPauseSong, onResumeSong,
-  offRoomState, offUsersUpdated, offPlaySong, offPauseSong, offResumeSong
+  emitPlaySong, emitPauseSong, emitResumeSong, emitSongEnded,
+  emitAddToQueue, emitRemoveFromQueue, emitPlayFromQueue,
+  onRoomState, onUsersUpdated, onPlaySong, onPauseSong, onResumeSong, onQueueUpdated,
+  offRoomState, offUsersUpdated, offPlaySong, offPauseSong, offResumeSong, offQueueUpdated
 } from '../socket';
 
 const getProxyUrl = (url) => `${import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001'}/api/audio?url=${encodeURIComponent(url)}`;
@@ -20,14 +22,9 @@ const selectBestAudioUrl = (song) => {
   const qualityPreference = ['320kbps', '192kbps', '128kbps', '96kbps', '64kbps'];
   for (const quality of qualityPreference) {
     const urlObj = song.downloadUrl.find(d => d.quality === quality && d.url);
-    if (urlObj?.url) {
-      console.log(`✅ Selected quality: ${quality}`);
-      return { url: urlObj.url, quality };
-    }
+    if (urlObj?.url) return { url: urlObj.url, quality };
   }
-  if (song.downloadUrl[0]?.url) {
-    return { url: song.downloadUrl[0].url, quality: song.downloadUrl[0].quality };
-  }
+  if (song.downloadUrl[0]?.url) return { url: song.downloadUrl[0].url, quality: song.downloadUrl[0].quality };
   return null;
 };
 
@@ -51,25 +48,13 @@ function UsernameModal({ onSubmit }) {
           <input
             type="text" autoFocus placeholder="Enter your name"
             value={name} onChange={e => setName(e.target.value)} maxLength={24}
-            style={{
-              padding:'13px 16px', background:'rgba(255,255,255,0.04)',
-              border:'1px solid rgba(255,255,255,0.08)', borderRadius:'12px',
-              color:'#f1f0ff', fontSize:'15px', outline:'none', fontFamily:'inherit',
-              transition:'border-color 0.2s'
-            }}
+            style={{padding:'13px 16px', background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:'12px', color:'#f1f0ff', fontSize:'15px', outline:'none', fontFamily:'inherit', transition:'border-color 0.2s'}}
             onFocus={e => e.target.style.borderColor='rgba(167,139,250,0.5)'}
             onBlur={e => e.target.style.borderColor='rgba(255,255,255,0.08)'}
           />
           <button
             type="submit" disabled={!name.trim()}
-            style={{
-              padding:'13px', borderRadius:'12px', border:'none',
-              background: name.trim() ? 'linear-gradient(135deg,#7c3aed,#db2777)' : 'rgba(255,255,255,0.08)',
-              color:'white', fontWeight:600, fontSize:'15px',
-              cursor: name.trim() ? 'pointer' : 'not-allowed', fontFamily:'inherit',
-              boxShadow: name.trim() ? '0 4px 20px rgba(124,58,237,0.4)' : 'none',
-              transition:'background 0.2s, box-shadow 0.2s'
-            }}
+            style={{padding:'13px', borderRadius:'12px', border:'none', background: name.trim() ? 'linear-gradient(135deg,#7c3aed,#db2777)' : 'rgba(255,255,255,0.08)', color:'white', fontWeight:600, fontSize:'15px', cursor: name.trim() ? 'pointer' : 'not-allowed', fontFamily:'inherit', boxShadow: name.trim() ? '0 4px 20px rgba(124,58,237,0.4)' : 'none', transition:'background 0.2s, box-shadow 0.2s'}}
           >
             Join Room
           </button>
@@ -93,13 +78,16 @@ export default function Room() {
   const [chatOpen, setChatOpen] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const [chatHistory, setChatHistory] = useState([]);
-  const [usersOpen, setUsersOpen] = useState(false); // ✅ dropdown
+  const [usersOpen, setUsersOpen] = useState(false);
+  const [queue, setQueue] = useState([]);
+  const [rightTab, setRightTab] = useState('chat'); // 'chat' | 'queue'
 
   const soundRef = useRef(null);
   const currentSongIdRef = useRef(null);
   const abortControllerRef = useRef(null);
   const pausePositionRef = useRef(0);
   const loadTimeoutRef = useRef(null);
+  const roomIdRef = useRef(roomId);
 
   const handleNameSubmit = (name) => { setUserName(name); setShowNameModal(false); };
 
@@ -117,19 +105,19 @@ export default function Room() {
     socket.connect();
     joinRoom(roomId, userId, userName);
 
-    onRoomState(({ users, chatHistory }) => {
+    onRoomState(({ users, chatHistory, queue }) => {
       setUsers(users);
       setChatHistory(chatHistory || []);
+      setQueue(queue || []);
     });
 
-    // ✅ Replace entire users list — removes left users automatically
-    onUsersUpdated((updatedUsers) => {
-      setUsers([...updatedUsers]);
-    });
-
+    onUsersUpdated((updatedUsers) => setUsers([...updatedUsers]));
     onPlaySong(({ songData, playUrl }) => playSong(songData, playUrl, false));
     onPauseSong(() => console.log('📢 Pause event from room'));
     onResumeSong(() => console.log('📢 Resume event from room'));
+
+    // ✅ Queue updates from server
+    onQueueUpdated((updatedQueue) => setQueue([...updatedQueue]));
 
     return () => {
       if (abortControllerRef.current) abortControllerRef.current.abort();
@@ -140,6 +128,7 @@ export default function Room() {
       offPlaySong();
       offPauseSong();
       offResumeSong();
+      offQueueUpdated();
       if (soundRef.current) {
         try { soundRef.current.stop(); soundRef.current.unload(); soundRef.current = null; } catch (e) {}
       }
@@ -176,7 +165,11 @@ export default function Room() {
       },
       onplay: () => { if (currentSongIdRef.current === song.id) { setIsPlaying(true); setIsLoading(false); } },
       onpause: () => setIsPlaying(false),
-      onend: () => setIsPlaying(false),
+      onend: () => {
+        setIsPlaying(false);
+        // ✅ Song ended — tell server to play next from queue
+        emitSongEnded(roomIdRef.current);
+      },
       onstop: () => setIsPlaying(false),
       onloaderror: (id, err) => {
         if (currentSongIdRef.current === song.id && !signal.aborted) {
@@ -212,6 +205,25 @@ export default function Room() {
     const audioUrlObj = selectBestAudioUrl(song);
     if (!audioUrlObj) { showToast('No audio available for this song', 'error'); return; }
     playSong(song, audioUrlObj.url, true);
+  };
+
+  // ✅ Add to queue
+  const handleAddToQueue = (song) => {
+    emitAddToQueue(roomId, song);
+    showToast(`Added "${song.name}" to queue`, 'success');
+    // Switch to queue tab so user can see it
+    setRightTab('queue');
+    if (!chatOpen) setChatOpen(true);
+  };
+
+  // ✅ Remove from queue
+  const handleRemoveFromQueue = (index) => {
+    emitRemoveFromQueue(roomId, index);
+  };
+
+  // ✅ Play specific song from queue
+  const handlePlayFromQueue = (index) => {
+    emitPlayFromQueue(roomId, index);
   };
 
   const handlePlayPause = () => {
@@ -282,13 +294,18 @@ export default function Room() {
           {/* Left: search + song list */}
           <div style={{flex:1, display:'flex', flexDirection:'column', padding:'16px', overflow:'hidden', minWidth:0}}>
             <SearchBar onResultsFound={setSongs} />
-            <SongList songs={songs} currentSong={currentSong} onSongSelect={handlePlaySong} />
+            <SongList
+              songs={songs}
+              currentSong={currentSong}
+              onSongSelect={handlePlaySong}
+              onAddToQueue={handleAddToQueue}
+            />
           </div>
 
           {/* Right panel */}
           <div style={{width: chatOpen ? '300px' : '60px', display:'flex', flexDirection:'column', borderLeft:'1px solid rgba(255,255,255,0.05)', overflow:'hidden', transition:'width 0.2s ease', flexShrink:0}}>
 
-            {/* ✅ Users Dropdown */}
+            {/* Users Dropdown */}
             <div style={{padding:'14px 16px', borderBottom:'1px solid rgba(255,255,255,0.05)', flexShrink:0}}>
               <div
                 onClick={() => setUsersOpen(p => !p)}
@@ -296,20 +313,14 @@ export default function Room() {
               >
                 <div style={{display:'flex', alignItems:'center', gap:'8px'}}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#55546a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-                  <span style={{fontSize:'12px', fontWeight:600, color:'#6b6a84', letterSpacing:'0.05em', textTransform:'uppercase'}}>
-                    Users ({users.length})
-                  </span>
+                  <span style={{fontSize:'12px', fontWeight:600, color:'#6b6a84', letterSpacing:'0.05em', textTransform:'uppercase'}}>Users ({users.length})</span>
                 </div>
-                <svg
-                  width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#55546a" strokeWidth="2"
-                  strokeLinecap="round" strokeLinejoin="round"
-                  style={{transform: usersOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition:'transform 0.2s', flexShrink:0}}
-                >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#55546a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                  style={{transform: usersOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition:'transform 0.2s', flexShrink:0}}>
                   <polyline points="6 9 12 15 18 9"/>
                 </svg>
               </div>
 
-              {/* ✅ Dropdown list — only active users */}
               {usersOpen && (
                 <div style={{marginTop:'10px', display:'flex', flexDirection:'column', gap:'6px'}}>
                   {users.map((u, i) => (
@@ -325,11 +336,37 @@ export default function Room() {
               )}
             </div>
 
-            {/* Chat */}
+            {/* ✅ Chat / Queue Tabs */}
             {chatOpen && (
-              <div style={{flex:1, overflow:'hidden', display:'flex', flexDirection:'column'}}>
-                <Chat roomId={roomId} userName={userName} chatHistory={chatHistory} />
-              </div>
+              <>
+                <div style={{display:'flex', borderBottom:'1px solid rgba(255,255,255,0.05)', flexShrink:0}}>
+                  <button
+                    onClick={() => setRightTab('chat')}
+                    style={{flex:1, padding:'10px', border:'none', background:'transparent', color: rightTab === 'chat' ? '#a78bfa' : '#55546a', fontSize:'12px', fontWeight:600, cursor:'pointer', borderBottom: rightTab === 'chat' ? '2px solid #a78bfa' : '2px solid transparent', transition:'all 0.2s'}}
+                  >
+                    💬 Chat
+                  </button>
+                  <button
+                    onClick={() => setRightTab('queue')}
+                    style={{flex:1, padding:'10px', border:'none', background:'transparent', color: rightTab === 'queue' ? '#a78bfa' : '#55546a', fontSize:'12px', fontWeight:600, cursor:'pointer', borderBottom: rightTab === 'queue' ? '2px solid #a78bfa' : '2px solid transparent', transition:'all 0.2s', position:'relative'}}
+                  >
+                    🎵 Queue {queue.length > 0 && <span style={{background:'#7c3aed', color:'white', fontSize:'10px', borderRadius:'99px', padding:'1px 6px', marginLeft:'4px'}}>{queue.length}</span>}
+                  </button>
+                </div>
+
+                <div style={{flex:1, overflow:'hidden', display:'flex', flexDirection:'column'}}>
+                  {rightTab === 'chat' ? (
+                    <Chat roomId={roomId} userName={userName} chatHistory={chatHistory} />
+                  ) : (
+                    <Queue
+                      queue={queue}
+                      currentSong={currentSong}
+                      onRemove={handleRemoveFromQueue}
+                      onPlayNext={handlePlayFromQueue}
+                    />
+                  )}
+                </div>
+              </>
             )}
           </div>
         </div>
@@ -341,6 +378,8 @@ export default function Room() {
           isLoading={isLoading}
           onPlay={handlePlayPause}
           sound={sound}
+          onNext={() => emitPlayFromQueue(roomId, 0)}
+          hasNext={queue.length > 0}
         />
       </div>
     </>

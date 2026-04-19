@@ -54,6 +54,23 @@ export const emitChatMessage = (roomId, user, text) => {
   socket?.emit('chat-message', { roomId, user, text, time });
 };
 
+// ✅ Queue events
+export const emitAddToQueue = (roomId, song) => {
+  socket?.emit('add-to-queue', { roomId, song });
+};
+
+export const emitRemoveFromQueue = (roomId, index) => {
+  socket?.emit('remove-from-queue', { roomId, index });
+};
+
+export const emitPlayFromQueue = (roomId, index) => {
+  socket?.emit('play-from-queue', { roomId, index });
+};
+
+export const emitSongEnded = (roomId) => {
+  socket?.emit('song-ended', { roomId });
+};
+
 const on = (event, cb) => socket?.on(event, cb);
 const off = (event) => socket?.off(event);
 
@@ -65,6 +82,10 @@ export const onSeekSong = (cb) => on('seek-song', cb);
 export const onResumeSong = (cb) => on('resume-song', cb);
 export const onChatMessage = (cb) => on('chat-message', cb);
 export const onSystemMessage = (cb) => on('system-message', cb);
+
+// ✅ Queue listeners
+export const onQueueUpdated = (cb) => on('queue-updated', cb);
+export const offQueueUpdated = () => off('queue-updated');
 
 export const offRoomState = () => off('room-state');
 export const offUsersUpdated = () => off('users-updated');
