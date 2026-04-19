@@ -31,8 +31,6 @@ export const joinRoom = (roomId, userId, userName) => {
 
 export const leaveRoom = () => {
   socket?.emit('leave-room');
-  // ✅ FIX: Disconnect immediately so server doesn't wait for timeout
-  socket?.disconnect();
 };
 
 export const emitPlaySong = (roomId, songData, playUrl, timestamp = 0) => {

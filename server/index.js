@@ -249,19 +249,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // ✅ FIX: Handle explicit leave-room so user is removed immediately on exit
-  socket.on('leave-room', () => {
-    const userInfo = socketToUser.get(socket.id);
-    if (userInfo) {
-      const room = roomManager.leaveRoom(userInfo.roomId, userInfo.userId);
-      if (room) io.to(userInfo.roomId).emit('users-updated', room.users);
-      socketToUser.delete(socket.id);
-      console.log(`🚪 User left room [${userInfo.roomId}]:`, userInfo.userId);
-    }
-  });
-
   socket.on('disconnect', () => {
-    // Handles tab close, network drop, etc. — may already be removed via leave-room
     const userInfo = socketToUser.get(socket.id);
     if (userInfo) {
       const room = roomManager.leaveRoom(userInfo.roomId, userInfo.userId);
