@@ -49,9 +49,9 @@ export const emitResumeSong = (roomId, timestamp) => {
   socket?.emit('resume-song', { roomId, timestamp });
 };
 
-export const emitChatMessage = (roomId, user, text) => {
+export const emitChatMessage = (roomId, user, text, msgType = 'text', extra = {}) => {
   const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  socket?.emit('chat-message', { roomId, user, text, time });
+  socket?.emit('chat-message', { roomId, user, text, time, msgType, ...extra });
 };
 
 // ✅ Queue events

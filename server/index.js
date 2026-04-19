@@ -199,8 +199,8 @@ io.on('connection', (socket) => {
   });
 
   // ✅ CHAT
-  socket.on('chat-message', ({ roomId, user, text, time }) => {
-    const message = { user, text, time };
+  socket.on('chat-message', ({ roomId, user, text, time, msgType = 'text', stickerId, gifUrl, gifTitle }) => {
+    const message = { user, text, time, msgType, stickerId, gifUrl, gifTitle };
     roomManager.addChatMessage(roomId, message);
     socket.to(roomId).emit('chat-message', message);
     console.log(`💬 Chat [${roomId}] ${user}: ${text}`);

@@ -76,6 +76,11 @@ export default function Room() {
   const [queue, setQueue] = useState([]);
   const [rightTab, setRightTab] = useState('chat');
 
+  const [panelWidth, setPanelWidth] = useState(280);
+  const isResizing = useRef(false);
+  const resizeStartX = useRef(0);
+  const resizeStartW = useRef(0);
+
   const soundRef = useRef(null);
   const currentSongIdRef = useRef(null);
   const abortControllerRef = useRef(null);
@@ -84,6 +89,30 @@ export default function Room() {
   const roomIdRef = useRef(roomId);
 
   const handleNameSubmit = (name) => { setUserName(name); setShowNameModal(false); };
+
+  const startResize = (e) => {
+    isResizing.current = true;
+    resizeStartX.current = e.clientX;
+    resizeStartW.current = panelWidth;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const onMove = (e) => {
+      if (!isResizing.current) return;
+      const delta = resizeStartX.current - e.clientX; // drag left = wider
+      const newW = Math.min(480, Math.max(260, resizeStartW.current + delta));
+      setPanelWidth(newW);
+    };
+    const onUp = () => {
+      isResizing.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
 
   const handleExitRoom = () => {
     if (soundRef.current) {
@@ -322,8 +351,32 @@ export default function Room() {
             <SongList songs={songs} currentSong={currentSong} onSongSelect={handlePlaySong} onAddToQueue={handleAddToQueue} />
           </div>
 
-          {/* Right panel */}
-          <div style={{width: chatOpen ? '280px' : '0px', display:'flex', flexDirection:'column', borderLeft: chatOpen ? '1px solid rgba(255,255,255,0.05)' : 'none', overflow:'hidden', transition:'width 0.2s ease', flexShrink:0}}>
+          {/* Right panel — resizable */}
+          <div style={{width: chatOpen ? `${panelWidth}px` : '0px', display:'flex', flexDirection:'column', borderLeft: chatOpen ? '1px solid rgba(255,255,255,0.05)' : 'none', overflow:'hidden', transition: isResizing.current ? 'none' : 'width 0.2s ease', flexShrink:0, position:'relative'}}>
+
+            {/* ── Drag-to-resize handle ── */}
+            {chatOpen && (
+              <div
+                onMouseDown={startResize}
+                title="Drag to resize"
+                style={{
+                  position: 'absolute', left: 0, top: 0, bottom: 0,
+                  width: '6px', zIndex: 20, cursor: 'col-resize',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  background: 'transparent',
+                  transition: 'background 0.15s',
+                }}
+                onMouseEnter={e => e.currentTarget.style.background = 'rgba(167,139,250,0.15)'}
+                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+              >
+                {/* Grip dots */}
+                <div style={{display:'flex', flexDirection:'column', gap:'4px', pointerEvents:'none'}}>
+                  {[0,1,2].map(i => (
+                    <div key={i} style={{width:'3px', height:'3px', borderRadius:'50%', background:'rgba(167,139,250,0.5)'}} />
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Users Dropdown */}
             <div style={{padding:'12px 14px', borderBottom:'1px solid rgba(255,255,255,0.05)', flexShrink:0}}>
