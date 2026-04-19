@@ -16,7 +16,56 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
 const PORT = 3001;
+// ✅ ADD THIS to server/index.js — paste after app.use(express.json()) line
+// Gift storage (in-memory — gifts survive until server restart)
 
+const gifts = new Map(); // giftId -> gift data
+
+function generateGiftId() {
+  return Math.random().toString(36).substring(2, 9).toUpperCase();
+}
+
+////////////////////////////////////////////////////////////
+// 🎁 GIFT API
+////////////////////////////////////////////////////////////
+
+// Create gift
+app.post('/api/gift/create', (req, res) => {
+  const { photo, song, message, from, vibe } = req.body;
+
+  if (!photo || !song || !message || !from) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
+  const giftId = generateGiftId();
+  const gift = {
+    giftId,
+    photo,
+    song,
+    message,
+    from,
+    vibe: vibe || 'dreamy',
+    createdAt: Date.now(),
+  };
+
+  gifts.set(giftId, gift);
+  console.log(`🎁 Gift created: ${giftId} from ${from}`);
+
+  // Auto delete after 7 days
+  setTimeout(() => {
+    gifts.delete(giftId);
+    console.log(`🗑️ Gift expired: ${giftId}`);
+  }, 7 * 24 * 60 * 60 * 1000);
+
+  res.json({ giftId });
+});
+
+// Get gift
+app.get('/api/gift/:giftId', (req, res) => {
+  const gift = gifts.get(req.params.giftId);
+  if (!gift) return res.status(404).json({ error: 'Gift not found' });
+  res.json(gift);
+});
 ////////////////////////////////////////////////////////////
 // 🔥 AUDIO PROXY
 ////////////////////////////////////////////////////////////
