@@ -1,8 +1,16 @@
 import { useState, useEffect, useRef } from 'react';
 
+// ✅ Fix HTML entities like &quot; &amp; etc
+const decode = (str) => {
+  if (!str) return str;
+  const txt = document.createElement('textarea');
+  txt.innerHTML = str;
+  return txt.value;
+};
+
 export default function SongList({ songs = [], currentSong, onSongSelect, onAddToQueue }) {
   const [hoveredId, setHoveredId] = useState(null);
-  const [contextMenu, setContextMenu] = useState(null); // { x, y, song }
+  const [contextMenu, setContextMenu] = useState(null);
   const menuRef = useRef(null);
 
   const fmt = (sec) => {
@@ -11,7 +19,6 @@ export default function SongList({ songs = [], currentSong, onSongSelect, onAddT
     return `${m}:${s.toString().padStart(2, '0')}`;
   };
 
-  // Close context menu on outside click
   useEffect(() => {
     const handleClick = () => setContextMenu(null);
     window.addEventListener('click', handleClick);
@@ -24,17 +31,11 @@ export default function SongList({ songs = [], currentSong, onSongSelect, onAddT
   };
 
   const handleAddToQueue = () => {
-    if (contextMenu?.song) {
-      onAddToQueue(contextMenu.song);
-      setContextMenu(null);
-    }
+    if (contextMenu?.song) { onAddToQueue(contextMenu.song); setContextMenu(null); }
   };
 
   const handlePlayNow = () => {
-    if (contextMenu?.song) {
-      onSongSelect(contextMenu.song);
-      setContextMenu(null);
-    }
+    if (contextMenu?.song) { onSongSelect(contextMenu.song); setContextMenu(null); }
   };
 
   if (!songs.length) {
@@ -55,7 +56,8 @@ export default function SongList({ songs = [], currentSong, onSongSelect, onAddT
         const isActive = currentSong?.id === song.id;
         const isHovered = hoveredId === song.id;
         const img = song.image?.[2]?.url || song.image?.[1]?.url || song.image?.[0]?.url;
-        const artist = song.primaryArtists || song.artists?.primary?.map(a => a.name).join(', ') || 'Unknown';
+        const artist = decode(song.primaryArtists || song.artists?.primary?.map(a => a.name).join(', ') || 'Unknown');
+        const songName = decode(song.name);
 
         return (
           <div
@@ -77,7 +79,7 @@ export default function SongList({ songs = [], currentSong, onSongSelect, onAddT
             {/* Artwork */}
             <div style={{position:'relative', width:'44px', height:'44px', flexShrink:0, borderRadius:'8px', overflow:'hidden', background:'rgba(255,255,255,0.05)'}}>
               {img ? (
-                <img src={img} alt={song.name} style={{width:'100%', height:'100%', objectFit:'cover'}} onError={e => e.target.style.display='none'} />
+                <img src={img} alt={songName} style={{width:'100%', height:'100%', objectFit:'cover'}} onError={e => e.target.style.display='none'} />
               ) : (
                 <div style={{display:'flex', alignItems:'center', justifyContent:'center', height:'100%', color:'#55546a'}}>
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
@@ -94,7 +96,7 @@ export default function SongList({ songs = [], currentSong, onSongSelect, onAddT
 
             {/* Info */}
             <div style={{flex:1, minWidth:0}}>
-              <p style={{fontSize:'14px', fontWeight:500, color: isActive ? '#a78bfa' : '#f1f0ff', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{song.name}</p>
+              <p style={{fontSize:'14px', fontWeight:500, color: isActive ? '#a78bfa' : '#f1f0ff', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{songName}</p>
               <p style={{fontSize:'12px', color:'#55546a', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', marginTop:'2px'}}>{artist}</p>
             </div>
 
@@ -104,42 +106,28 @@ export default function SongList({ songs = [], currentSong, onSongSelect, onAddT
         );
       })}
 
-      {/* ✅ Right Click Context Menu */}
+      {/* Right Click Context Menu */}
       {contextMenu && (
         <div
           ref={menuRef}
           onClick={e => e.stopPropagation()}
           style={{
-            position:'fixed',
-            top: contextMenu.y,
-            left: contextMenu.x,
-            zIndex:1000,
-            background:'rgba(22,22,35,0.98)',
-            border:'1px solid rgba(255,255,255,0.1)',
-            borderRadius:'12px',
-            padding:'6px',
-            boxShadow:'0 8px 32px rgba(0,0,0,0.5)',
-            backdropFilter:'blur(20px)',
-            minWidth:'180px'
+            position:'fixed', top: contextMenu.y, left: contextMenu.x, zIndex:1000,
+            background:'rgba(22,22,35,0.98)', border:'1px solid rgba(255,255,255,0.1)',
+            borderRadius:'12px', padding:'6px', boxShadow:'0 8px 32px rgba(0,0,0,0.5)',
+            backdropFilter:'blur(20px)', minWidth:'180px'
           }}
         >
-          {/* Song info */}
           <div style={{padding:'8px 10px 10px', borderBottom:'1px solid rgba(255,255,255,0.06)', marginBottom:'4px'}}>
-            <p style={{fontSize:'12px', fontWeight:600, color:'#f1f0ff', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{contextMenu.song.name}</p>
+            <p style={{fontSize:'12px', fontWeight:600, color:'#f1f0ff', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{decode(contextMenu.song.name)}</p>
             <p style={{fontSize:'11px', color:'#55546a', marginTop:'2px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>
-              {contextMenu.song.primaryArtists || 'Unknown'}
+              {decode(contextMenu.song.primaryArtists) || 'Unknown'}
             </p>
           </div>
 
-          {/* Play Now */}
           <button
             onClick={handlePlayNow}
-            style={{
-              width:'100%', display:'flex', alignItems:'center', gap:'10px',
-              padding:'9px 10px', borderRadius:'8px', border:'none',
-              background:'transparent', color:'#f1f0ff', cursor:'pointer',
-              fontSize:'13px', textAlign:'left', transition:'background 0.15s'
-            }}
+            style={{width:'100%', display:'flex', alignItems:'center', gap:'10px', padding:'9px 10px', borderRadius:'8px', border:'none', background:'transparent', color:'#f1f0ff', cursor:'pointer', fontSize:'13px', textAlign:'left', transition:'background 0.15s'}}
             onMouseEnter={e => e.currentTarget.style.background='rgba(255,255,255,0.06)'}
             onMouseLeave={e => e.currentTarget.style.background='transparent'}
           >
@@ -147,15 +135,9 @@ export default function SongList({ songs = [], currentSong, onSongSelect, onAddT
             Play Now
           </button>
 
-          {/* Add to Queue */}
           <button
             onClick={handleAddToQueue}
-            style={{
-              width:'100%', display:'flex', alignItems:'center', gap:'10px',
-              padding:'9px 10px', borderRadius:'8px', border:'none',
-              background:'transparent', color:'#a78bfa', cursor:'pointer',
-              fontSize:'13px', textAlign:'left', transition:'background 0.15s'
-            }}
+            style={{width:'100%', display:'flex', alignItems:'center', gap:'10px', padding:'9px 10px', borderRadius:'8px', border:'none', background:'transparent', color:'#a78bfa', cursor:'pointer', fontSize:'13px', textAlign:'left', transition:'background 0.15s'}}
             onMouseEnter={e => e.currentTarget.style.background='rgba(167,139,250,0.08)'}
             onMouseLeave={e => e.currentTarget.style.background='transparent'}
           >

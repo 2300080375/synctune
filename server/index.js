@@ -9,10 +9,7 @@ const app = express();
 const server = http.createServer(app);
 
 const io = new Server(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  }
+  cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
 app.use(cors());
@@ -41,23 +38,13 @@ app.get('/api/audio', (req, res) => {
     },
     timeout: 30000
   }, (audioRes) => {
-    const originalContentType = audioRes.headers['content-type'];
-    console.log(`✅ Audio response - Status: ${audioRes.statusCode}, Original Content-Type: ${originalContentType}, Size: ${audioRes.headers['content-length']}`);
+    console.log(`✅ Audio response - Status: ${audioRes.statusCode}, Size: ${audioRes.headers['content-length']}`);
 
-    if (audioRes.statusCode === 404) {
-      console.error("❌ Audio URL returned 404");
-      return res.status(404).json({ error: 'Audio not found' });
-    }
-    if (audioRes.statusCode >= 400) {
-      console.error(`❌ Audio URL returned ${audioRes.statusCode}`);
-      return res.status(audioRes.statusCode).json({ error: `Server returned ${audioRes.statusCode}` });
-    }
-
-    const contentType = 'audio/mpeg';
-    console.log(`📤 Sending as: ${contentType}`);
+    if (audioRes.statusCode === 404) return res.status(404).json({ error: 'Audio not found' });
+    if (audioRes.statusCode >= 400) return res.status(audioRes.statusCode).json({ error: `Server returned ${audioRes.statusCode}` });
 
     res.writeHead(audioRes.statusCode, {
-      'Content-Type': contentType,
+      'Content-Type': 'audio/mpeg',
       'Access-Control-Allow-Origin': '*',
       'Accept-Ranges': 'bytes',
       'Cache-Control': 'public, max-age=3600',
@@ -65,7 +52,6 @@ app.get('/api/audio', (req, res) => {
     });
 
     audioRes.pipe(res);
-
     audioRes.on('error', (err) => {
       console.error("❌ Audio stream error:", err.message);
       if (!res.headersSent) res.status(500).json({ error: 'Stream error' });
@@ -99,23 +85,18 @@ function fetchFromMirror(mirror, query) {
   return new Promise((resolve, reject) => {
     const path = `/api/search/songs?query=${encodeURIComponent(query)}&limit=20`;
     const options = {
-      hostname: mirror,
-      path,
-      method: 'GET',
+      hostname: mirror, path, method: 'GET',
       headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' },
       timeout: 8000,
     };
-
     const req = https.request(options, (res) => {
       if (res.statusCode !== 200) return reject(new Error(`Mirror ${mirror} returned ${res.statusCode}`));
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
-        try { resolve(JSON.parse(data)); }
-        catch { reject(new Error('Invalid JSON')); }
+        try { resolve(JSON.parse(data)); } catch { reject(new Error('Invalid JSON')); }
       });
     });
-
     req.on('error', reject);
     req.on('timeout', () => { req.destroy(); reject(new Error('Timeout')); });
     req.end();
@@ -125,7 +106,6 @@ function fetchFromMirror(mirror, query) {
 app.get('/api/search', async (req, res) => {
   const { query } = req.query;
   if (!query) return res.status(400).json({ error: 'Query required' });
-
   console.log("🔍 Search:", query);
   for (const mirror of SAAVN_MIRRORS) {
     try {
@@ -145,6 +125,9 @@ app.get('/api/search', async (req, res) => {
 
 const socketToUser = new Map();
 
+// ✅ Track song play timestamps for accurate sync
+const roomPlayTimestamps = new Map(); // roomId -> { startedAt, timestamp }
+
 io.on('connection', (socket) => {
   console.log("🔌 Connected:", socket.id);
 
@@ -152,24 +135,39 @@ io.on('connection', (socket) => {
     if (!roomManager.roomExists(roomId)) roomManager.createRoom(roomId);
 
     const room = roomManager.joinRoom(roomId, userId, userName);
-    socketToUser.set(socket.id, { roomId, userId });
+    socketToUser.set(socket.id, { roomId, userId, userName });
     socket.join(roomId);
+
+    // ✅ Calculate accurate current timestamp for new joiner
+    let accurateTimestamp = room.timestamp || 0;
+    if (room.isPlaying && roomPlayTimestamps.has(roomId)) {
+      const { startedAt, timestamp } = roomPlayTimestamps.get(roomId);
+      const elapsed = (Date.now() - startedAt) / 1000;
+      accurateTimestamp = timestamp + elapsed;
+    }
 
     socket.emit('room-state', {
       users: room.users,
       currentSong: room.currentSong,
       currentUrl: room.currentUrl,
-      timestamp: room.timestamp,
+      timestamp: accurateTimestamp,
       isPlaying: room.isPlaying,
       chatHistory: roomManager.getChatHistory(roomId),
-      queue: roomManager.getQueue(roomId), // ✅ send queue on join
+      queue: roomManager.getQueue(roomId),
     });
 
     io.to(roomId).emit('users-updated', room.users);
+
+    // ✅ Join notification in chat
+    if (room.users.length > 1) {
+      io.to(roomId).emit('system-message', { text: `${userName} joined the room 👋` });
+    }
   });
 
   socket.on('play-song', ({ roomId, songData, playUrl, timestamp }) => {
     roomManager.updateSongState(roomId, songData, playUrl, timestamp, true);
+    // ✅ Track when song started for sync
+    roomPlayTimestamps.set(roomId, { startedAt: Date.now(), timestamp: timestamp || 0 });
     io.to(roomId).emit('play-song', { songData, playUrl, timestamp });
   });
 
@@ -177,6 +175,7 @@ io.on('connection', (socket) => {
     const room = roomManager.getRoom(roomId);
     if (room) {
       roomManager.updateSongState(roomId, room.currentSong, room.currentUrl, timestamp, false);
+      roomPlayTimestamps.delete(roomId);
       io.to(roomId).emit('pause-song', { timestamp });
     }
   });
@@ -185,6 +184,7 @@ io.on('connection', (socket) => {
     const room = roomManager.getRoom(roomId);
     if (room) {
       roomManager.updateSongState(roomId, room.currentSong, room.currentUrl, timestamp, room.isPlaying);
+      if (room.isPlaying) roomPlayTimestamps.set(roomId, { startedAt: Date.now(), timestamp });
       io.to(roomId).emit('seek-song', { timestamp });
     }
   });
@@ -193,6 +193,7 @@ io.on('connection', (socket) => {
     const room = roomManager.getRoom(roomId);
     if (room) {
       roomManager.updateSongState(roomId, room.currentSong, room.currentUrl, timestamp, true);
+      roomPlayTimestamps.set(roomId, { startedAt: Date.now(), timestamp });
       io.to(roomId).emit('resume-song', { timestamp });
     }
   });
@@ -202,22 +203,23 @@ io.on('connection', (socket) => {
     const message = { user, text, time };
     roomManager.addChatMessage(roomId, message);
     socket.to(roomId).emit('chat-message', message);
+    console.log(`💬 Chat [${roomId}] ${user}: ${text}`);
   });
 
-  // ✅ QUEUE — Add song
+  // ✅ QUEUE — Add
   socket.on('add-to-queue', ({ roomId, song }) => {
     roomManager.addToQueue(roomId, song);
     io.to(roomId).emit('queue-updated', roomManager.getQueue(roomId));
     console.log(`🎵 Queue add [${roomId}]:`, song.name);
   });
 
-  // ✅ QUEUE — Remove song
+  // ✅ QUEUE — Remove
   socket.on('remove-from-queue', ({ roomId, index }) => {
     roomManager.removeFromQueue(roomId, index);
     io.to(roomId).emit('queue-updated', roomManager.getQueue(roomId));
   });
 
-  // ✅ QUEUE — Play specific song from queue
+  // ✅ QUEUE — Play specific
   socket.on('play-from-queue', ({ roomId, index }) => {
     const song = roomManager.playFromQueue(roomId, index);
     if (song) {
@@ -226,14 +228,14 @@ io.on('connection', (socket) => {
         || song.downloadUrl?.[0]?.url;
       if (audioUrl) {
         roomManager.updateSongState(roomId, song, audioUrl, 0, true);
+        roomPlayTimestamps.set(roomId, { startedAt: Date.now(), timestamp: 0 });
         io.to(roomId).emit('play-song', { songData: song, playUrl: audioUrl, timestamp: 0 });
         io.to(roomId).emit('queue-updated', roomManager.getQueue(roomId));
-        console.log(`▶️ Playing from queue [${roomId}]:`, song.name);
       }
     }
   });
 
-  // ✅ QUEUE — Song ended, auto play next
+  // ✅ QUEUE — Auto next on song end
   socket.on('song-ended', ({ roomId }) => {
     const nextSong = roomManager.playNextFromQueue(roomId);
     if (nextSong) {
@@ -242,6 +244,7 @@ io.on('connection', (socket) => {
         || nextSong.downloadUrl?.[0]?.url;
       if (audioUrl) {
         roomManager.updateSongState(roomId, nextSong, audioUrl, 0, true);
+        roomPlayTimestamps.set(roomId, { startedAt: Date.now(), timestamp: 0 });
         io.to(roomId).emit('play-song', { songData: nextSong, playUrl: audioUrl, timestamp: 0 });
         io.to(roomId).emit('queue-updated', roomManager.getQueue(roomId));
         console.log(`⏭️ Auto next [${roomId}]:`, nextSong.name);
@@ -252,8 +255,13 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     const userInfo = socketToUser.get(socket.id);
     if (userInfo) {
-      const room = roomManager.leaveRoom(userInfo.roomId, userInfo.userId);
-      if (room) io.to(userInfo.roomId).emit('users-updated', room.users);
+      const { roomId, userName } = userInfo;
+      const room = roomManager.leaveRoom(roomId, userInfo.userId);
+      if (room) {
+        io.to(roomId).emit('users-updated', room.users);
+        // ✅ Leave notification in chat
+        io.to(roomId).emit('system-message', { text: `${userName} left the room` });
+      }
       socketToUser.delete(socket.id);
     }
     console.log("❌ Disconnected:", socket.id);
@@ -264,14 +272,10 @@ io.on('connection', (socket) => {
 // 🟢 BASE ROUTE
 ////////////////////////////////////////////////////////////
 
-app.get('/', (req, res) => {
-  res.send("🎵 SyncTune Server Running");
-});
+app.get('/', (req, res) => res.send("🎵 SyncTune Server Running"));
 
 ////////////////////////////////////////////////////////////
-// 🚀 START SERVER
+// 🚀 START
 ////////////////////////////////////////////////////////////
 
-server.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
-});
+server.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));

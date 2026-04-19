@@ -32,12 +32,7 @@ const selectBestAudioUrl = (song) => {
 
 function UsernameModal({ onSubmit }) {
   const [name, setName] = useState('');
-  const submit = (e) => {
-    e.preventDefault();
-    const t = name.trim();
-    if (!t) return;
-    onSubmit(t);
-  };
+  const submit = (e) => { e.preventDefault(); const t = name.trim(); if (!t) return; onSubmit(t); };
   return (
     <div style={{position:'fixed', inset:0, zIndex:50, display:'flex', alignItems:'center', justifyContent:'center', background:'rgba(0,0,0,0.7)', backdropFilter:'blur(8px)', padding:'24px', fontFamily:"'DM Sans',system-ui,sans-serif"}}>
       <div style={{width:'100%', maxWidth:'380px', background:'rgba(19,19,30,0.95)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:'20px', padding:'28px', backdropFilter:'blur(24px)'}}>
@@ -54,12 +49,9 @@ function UsernameModal({ onSubmit }) {
             onFocus={e => e.target.style.borderColor='rgba(167,139,250,0.5)'}
             onBlur={e => e.target.style.borderColor='rgba(255,255,255,0.08)'}
           />
-          <button
-            type="submit" disabled={!name.trim()}
+          <button type="submit" disabled={!name.trim()}
             style={{padding:'13px', borderRadius:'12px', border:'none', background: name.trim() ? 'linear-gradient(135deg,#7c3aed,#db2777)' : 'rgba(255,255,255,0.08)', color:'white', fontWeight:600, fontSize:'15px', cursor: name.trim() ? 'pointer' : 'not-allowed', fontFamily:'inherit', boxShadow: name.trim() ? '0 4px 20px rgba(124,58,237,0.4)' : 'none', transition:'background 0.2s, box-shadow 0.2s'}}
-          >
-            Join Room
-          </button>
+          >Join Room</button>
         </form>
       </div>
     </div>
@@ -79,10 +71,7 @@ export default function Room() {
   const [sound, setSound] = useState(null);
   const [chatOpen, setChatOpen] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
-
-  // ✅ FIX: Chat messages lifted to Room so they survive tab switches
   const [chatMessages, setChatMessages] = useState([]);
-
   const [usersOpen, setUsersOpen] = useState(false);
   const [queue, setQueue] = useState([]);
   const [rightTab, setRightTab] = useState('chat');
@@ -104,8 +93,7 @@ export default function Room() {
     navigate('/');
   };
 
-  // ✅ FIX: playSong defined before useEffect so we can call it from room-state
-  const playSong = (song, url, emit = true, retryCount = 0) => {
+  const playSong = (song, url, emit = true, retryCount = 0, seekTo = 0) => {
     if (!url) { showToast('No playable URL found', 'error'); return; }
     pausePositionRef.current = 0;
     if (abortControllerRef.current) abortControllerRef.current.abort();
@@ -121,16 +109,16 @@ export default function Room() {
     }
     const proxyUrl = getProxyUrl(url);
     const newSound = new Howl({
-      src: [proxyUrl],
-      html5: true,
-      volume: 1,
-      preload: 'metadata',
-      format: ['mp3', 'mpeg'],
-      xhr: { timeout: 30000, method: 'GET' },
+      src: [proxyUrl], html5: true, volume: 1, preload: 'metadata',
+      format: ['mp3', 'mpeg'], xhr: { timeout: 30000, method: 'GET' },
       onload: () => {
         if (signal.aborted || currentSongIdRef.current !== song.id) { newSound.stop(); newSound.unload(); return; }
         if (loadTimeoutRef.current) { clearTimeout(loadTimeoutRef.current); loadTimeoutRef.current = null; }
         setIsLoading(false);
+        // ✅ Seek to correct position for new joiners
+        if (seekTo > 0) {
+          try { newSound.seek(seekTo); } catch (e) {}
+        }
         try { newSound.play(); } catch (e) { setIsLoading(false); }
       },
       onplay: () => { if (currentSongIdRef.current === song.id) { setIsPlaying(true); setIsLoading(false); } },
@@ -145,12 +133,11 @@ export default function Room() {
           const errorMsg = String(err || '').toLowerCase();
           const isCodecError = errorMsg.includes('codec') || errorMsg.includes('format');
           if (isCodecError && retryCount < 1) {
-            setTimeout(() => { if (currentSongIdRef.current === song.id) playSong(song, url, false, retryCount + 1); }, 500);
+            setTimeout(() => { if (currentSongIdRef.current === song.id) playSong(song, url, false, retryCount + 1, seekTo); }, 500);
             return;
           }
           showToast('Could not load audio. Try another song.', 'error');
-          setIsLoading(false);
-          setIsPlaying(false);
+          setIsLoading(false); setIsPlaying(false);
         }
       },
       onplayerror: () => { showToast('Could not play audio', 'error'); setIsLoading(false); setIsPlaying(false); }
@@ -176,60 +163,50 @@ export default function Room() {
     socket.connect();
     joinRoom(roomId, userId, userName);
 
-    // ✅ FIX: Properly restore ALL room state on join (including current song)
     onRoomState(({ users, chatHistory, queue, currentSong, currentUrl, isPlaying, timestamp }) => {
       setUsers(users);
-      // Restore chat history as properly typed messages
       setChatMessages((chatHistory || []).map(msg => ({ ...msg, type: 'chat' })));
       setQueue(queue || []);
-
-      // ✅ FIX: Restore current song if room is already playing something
+      // ✅ Restore current song with accurate timestamp
       if (currentSong && currentUrl) {
-        playSong(currentSong, currentUrl, false);
-        // Seek to approximate current position (accounting for latency)
-        // The timestamp is where the song was when last updated; we can't perfectly sync
-        // but we play from that point
+        playSong(currentSong, currentUrl, false, 0, timestamp || 0);
       }
     });
 
     onUsersUpdated((updatedUsers) => setUsers([...updatedUsers]));
 
-    // ✅ FIX: play-song from server (another user played a song)
-    onPlaySong(({ songData, playUrl }) => playSong(songData, playUrl, false));
-    onPauseSong(() => {
+    onPlaySong(({ songData, playUrl, timestamp }) => playSong(songData, playUrl, false, 0, timestamp || 0));
+
+    // ✅ Pause sync
+    onPauseSong(({ timestamp }) => {
       if (soundRef.current?.playing()) {
-        pausePositionRef.current = soundRef.current.seek() || 0;
+        if (timestamp !== undefined) soundRef.current.seek(timestamp);
+        pausePositionRef.current = timestamp || soundRef.current.seek() || 0;
         soundRef.current.pause();
         setIsPlaying(false);
       }
     });
+
+    // ✅ Resume sync
     onResumeSong(({ timestamp }) => {
       if (soundRef.current && !soundRef.current.playing()) {
         if (timestamp !== undefined) soundRef.current.seek(timestamp);
+        pausePositionRef.current = timestamp || 0;
         soundRef.current.play();
         setIsPlaying(true);
       }
     });
 
-    // ✅ FIX: Chat messages stored in Room state (not in Chat component)
     onChatMessage(msg => setChatMessages(p => [...p, { ...msg, type: 'chat' }]));
     onSystemMessage(msg => setChatMessages(p => [...p, { ...msg, type: 'system' }]));
-
-    // ✅ Queue updates from server
     onQueueUpdated((updatedQueue) => setQueue([...updatedQueue]));
 
     return () => {
       if (abortControllerRef.current) abortControllerRef.current.abort();
       if (loadTimeoutRef.current) clearTimeout(loadTimeoutRef.current);
       leaveRoom();
-      offRoomState();
-      offUsersUpdated();
-      offPlaySong();
-      offPauseSong();
-      offResumeSong();
-      offQueueUpdated();
-      offChatMessage();
-      offSystemMessage();
+      offRoomState(); offUsersUpdated(); offPlaySong(); offPauseSong();
+      offResumeSong(); offQueueUpdated(); offChatMessage(); offSystemMessage();
       if (soundRef.current) {
         try { soundRef.current.stop(); soundRef.current.unload(); soundRef.current = null; } catch (e) {}
       }
@@ -244,23 +221,15 @@ export default function Room() {
 
   const handleAddToQueue = (song) => {
     emitAddToQueue(roomId, song);
-    showToast(`Added "${song.name}" to queue`, 'success');
+    showToast(`Added to queue 🎵`, 'success');
     setRightTab('queue');
     if (!chatOpen) setChatOpen(true);
   };
 
-  const handleRemoveFromQueue = (index) => {
-    emitRemoveFromQueue(roomId, index);
-  };
+  const handleRemoveFromQueue = (index) => emitRemoveFromQueue(roomId, index);
+  const handlePlayFromQueue = (index) => emitPlayFromQueue(roomId, index);
 
-  const handlePlayFromQueue = (index) => {
-    emitPlayFromQueue(roomId, index);
-  };
-
-  // ✅ FIX: Handler for chat messages sent by this user (passed to Chat component)
-  const handleNewChatMessage = (msg) => {
-    setChatMessages(p => [...p, msg]);
-  };
+  const handleNewChatMessage = (msg) => setChatMessages(p => [...p, msg]);
 
   const handlePlayPause = () => {
     if (!soundRef.current || isLoading) return;
@@ -284,6 +253,21 @@ export default function Room() {
     }
   };
 
+  // ✅ Share room link
+  const handleShare = async () => {
+    const url = `${window.location.origin}/room/${roomId}`;
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: 'Join my SyncTune room!', url });
+      } else {
+        await navigator.clipboard.writeText(url);
+        showToast('Room link copied! 🔗', 'success');
+      }
+    } catch {
+      showToast('Room ID: ' + roomId, 'success');
+    }
+  };
+
   return (
     <>
       {showNameModal && <UsernameModal onSubmit={handleNameSubmit} />}
@@ -291,34 +275,39 @@ export default function Room() {
       <div style={{display:'flex', flexDirection:'column', height:'100vh', background:'#0d0d14', fontFamily:"'DM Sans',system-ui,sans-serif", overflow:'hidden'}}>
 
         {/* Top bar */}
-        <div style={{display:'flex', alignItems:'center', justifyContent:'space-between', padding:'0 20px', height:'52px', borderBottom:'1px solid rgba(255,255,255,0.05)', flexShrink:0, background:'rgba(13,13,20,0.8)', backdropFilter:'blur(20px)'}}>
-          <div style={{display:'flex', alignItems:'center', gap:'10px'}}>
-            <div style={{width:'28px', height:'28px', borderRadius:'8px', background:'linear-gradient(135deg,#7c3aed,#db2777)', display:'flex', alignItems:'center', justifyContent:'center'}}>
+        <div style={{display:'flex', alignItems:'center', justifyContent:'space-between', padding:'0 12px', height:'52px', borderBottom:'1px solid rgba(255,255,255,0.05)', flexShrink:0, background:'rgba(13,13,20,0.8)', backdropFilter:'blur(20px)'}}>
+          <div style={{display:'flex', alignItems:'center', gap:'8px'}}>
+            <div style={{width:'28px', height:'28px', borderRadius:'8px', background:'linear-gradient(135deg,#7c3aed,#db2777)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0}}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
             </div>
             <span style={{fontFamily:"'Syne',system-ui,sans-serif", fontWeight:700, fontSize:'16px', color:'white'}}>Sync<span style={{background:'linear-gradient(135deg,#a78bfa,#f472b6)', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent', backgroundClip:'text'}}>Tune</span></span>
           </div>
 
-          <div style={{display:'flex', alignItems:'center', gap:'12px'}}>
-            <div style={{display:'flex', alignItems:'center', gap:'6px', padding:'4px 10px', background:'rgba(255,255,255,0.04)', borderRadius:'99px', border:'1px solid rgba(255,255,255,0.07)'}}>
-              <div style={{width:'6px', height:'6px', borderRadius:'50%', background:'#34d399'}} />
+          <div style={{display:'flex', alignItems:'center', gap:'8px'}}>
+            {/* Room ID + Share */}
+            <div
+              onClick={handleShare}
+              style={{display:'flex', alignItems:'center', gap:'6px', padding:'4px 10px', background:'rgba(255,255,255,0.04)', borderRadius:'99px', border:'1px solid rgba(255,255,255,0.07)', cursor:'pointer'}}
+              title="Share room link"
+            >
+              <div style={{width:'6px', height:'6px', borderRadius:'50%', background:'#34d399', flexShrink:0}} />
               <span style={{fontSize:'12px', color:'#8b8aa8', fontFamily:'monospace', letterSpacing:'0.05em'}}>{roomId}</span>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#55546a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
             </div>
 
-            <button
-              onClick={() => setChatOpen(p => !p)}
-              style={{background:'none', border:'none', cursor:'pointer', padding:'6px', color: chatOpen ? '#a78bfa' : '#55546a', display:'flex', alignItems:'center', justifyContent:'center', transition:'color 0.2s'}}
-            >
+            {/* Chat toggle */}
+            <button onClick={() => setChatOpen(p => !p)}
+              style={{background:'none', border:'none', cursor:'pointer', padding:'6px', color: chatOpen ? '#a78bfa' : '#55546a', display:'flex', alignItems:'center', transition:'color 0.2s'}}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
             </button>
 
-            <button
-              onClick={handleExitRoom}
-              style={{display:'flex', alignItems:'center', gap:'6px', padding:'6px 12px', borderRadius:'8px', border:'1px solid rgba(255,80,80,0.3)', background:'rgba(255,80,80,0.1)', color:'#ff6b6b', cursor:'pointer', fontSize:'12px', fontWeight:600, transition:'all 0.2s'}}
+            {/* Exit */}
+            <button onClick={handleExitRoom}
+              style={{display:'flex', alignItems:'center', gap:'4px', padding:'6px 10px', borderRadius:'8px', border:'1px solid rgba(255,80,80,0.3)', background:'rgba(255,80,80,0.1)', color:'#ff6b6b', cursor:'pointer', fontSize:'12px', fontWeight:600, transition:'all 0.2s'}}
               onMouseEnter={e => e.currentTarget.style.background='rgba(255,80,80,0.2)'}
               onMouseLeave={e => e.currentTarget.style.background='rgba(255,80,80,0.1)'}
             >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
               Exit
             </button>
           </div>
@@ -328,25 +317,18 @@ export default function Room() {
         <div style={{display:'flex', flex:1, overflow:'hidden'}}>
 
           {/* Left: search + song list */}
-          <div style={{flex:1, display:'flex', flexDirection:'column', padding:'16px', overflow:'hidden', minWidth:0}}>
+          <div style={{flex:1, display:'flex', flexDirection:'column', padding:'12px', overflow:'hidden', minWidth:0}}>
             <SearchBar onResultsFound={setSongs} />
-            <SongList
-              songs={songs}
-              currentSong={currentSong}
-              onSongSelect={handlePlaySong}
-              onAddToQueue={handleAddToQueue}
-            />
+            <SongList songs={songs} currentSong={currentSong} onSongSelect={handlePlaySong} onAddToQueue={handleAddToQueue} />
           </div>
 
           {/* Right panel */}
-          <div style={{width: chatOpen ? '300px' : '60px', display:'flex', flexDirection:'column', borderLeft:'1px solid rgba(255,255,255,0.05)', overflow:'hidden', transition:'width 0.2s ease', flexShrink:0}}>
+          <div style={{width: chatOpen ? '280px' : '0px', display:'flex', flexDirection:'column', borderLeft: chatOpen ? '1px solid rgba(255,255,255,0.05)' : 'none', overflow:'hidden', transition:'width 0.2s ease', flexShrink:0}}>
 
             {/* Users Dropdown */}
-            <div style={{padding:'14px 16px', borderBottom:'1px solid rgba(255,255,255,0.05)', flexShrink:0}}>
-              <div
-                onClick={() => setUsersOpen(p => !p)}
-                style={{display:'flex', alignItems:'center', justifyContent:'space-between', cursor:'pointer', userSelect:'none'}}
-              >
+            <div style={{padding:'12px 14px', borderBottom:'1px solid rgba(255,255,255,0.05)', flexShrink:0}}>
+              <div onClick={() => setUsersOpen(p => !p)}
+                style={{display:'flex', alignItems:'center', justifyContent:'space-between', cursor:'pointer', userSelect:'none'}}>
                 <div style={{display:'flex', alignItems:'center', gap:'8px'}}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#55546a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
                   <span style={{fontSize:'12px', fontWeight:600, color:'#6b6a84', letterSpacing:'0.05em', textTransform:'uppercase'}}>Users ({users.length})</span>
@@ -356,12 +338,11 @@ export default function Room() {
                   <polyline points="6 9 12 15 18 9"/>
                 </svg>
               </div>
-
               {usersOpen && (
                 <div style={{marginTop:'10px', display:'flex', flexDirection:'column', gap:'6px'}}>
                   {users.map((u, i) => (
                     <div key={i} style={{display:'flex', alignItems:'center', gap:'8px'}}>
-                      <div style={{width:'28px', height:'28px', borderRadius:'50%', background:`hsl(${(u.name?.charCodeAt(0) || 0) * 42 % 360},60%,55%)`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:'11px', fontWeight:700, color:'white', flexShrink:0}}>
+                      <div style={{width:'26px', height:'26px', borderRadius:'50%', background:`hsl(${(u.name?.charCodeAt(0) || 0) * 42 % 360},60%,55%)`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:'10px', fontWeight:700, color:'white', flexShrink:0}}>
                         {u.name?.[0]?.toUpperCase() || '?'}
                       </div>
                       <span style={{fontSize:'13px', color:'#c4c3de', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{u.name}</span>
@@ -373,45 +354,26 @@ export default function Room() {
             </div>
 
             {/* Chat / Queue Tabs */}
-            {chatOpen && (
-              <>
-                <div style={{display:'flex', borderBottom:'1px solid rgba(255,255,255,0.05)', flexShrink:0}}>
-                  <button
-                    onClick={() => setRightTab('chat')}
-                    style={{flex:1, padding:'10px', border:'none', background:'transparent', color: rightTab === 'chat' ? '#a78bfa' : '#55546a', fontSize:'12px', fontWeight:600, cursor:'pointer', borderBottom: rightTab === 'chat' ? '2px solid #a78bfa' : '2px solid transparent', transition:'all 0.2s'}}
-                  >
-                    💬 Chat
-                  </button>
-                  <button
-                    onClick={() => setRightTab('queue')}
-                    style={{flex:1, padding:'10px', border:'none', background:'transparent', color: rightTab === 'queue' ? '#a78bfa' : '#55546a', fontSize:'12px', fontWeight:600, cursor:'pointer', borderBottom: rightTab === 'queue' ? '2px solid #a78bfa' : '2px solid transparent', transition:'all 0.2s', position:'relative'}}
-                  >
-                    🎵 Queue {queue.length > 0 && <span style={{background:'#7c3aed', color:'white', fontSize:'10px', borderRadius:'99px', padding:'1px 6px', marginLeft:'4px'}}>{queue.length}</span>}
-                  </button>
-                </div>
+            <div style={{display:'flex', borderBottom:'1px solid rgba(255,255,255,0.05)', flexShrink:0}}>
+              <button onClick={() => setRightTab('chat')}
+                style={{flex:1, padding:'10px', border:'none', background:'transparent', color: rightTab === 'chat' ? '#a78bfa' : '#55546a', fontSize:'12px', fontWeight:600, cursor:'pointer', borderBottom: rightTab === 'chat' ? '2px solid #a78bfa' : '2px solid transparent', transition:'all 0.2s'}}>
+                💬 Chat
+              </button>
+              <button onClick={() => setRightTab('queue')}
+                style={{flex:1, padding:'10px', border:'none', background:'transparent', color: rightTab === 'queue' ? '#a78bfa' : '#55546a', fontSize:'12px', fontWeight:600, cursor:'pointer', borderBottom: rightTab === 'queue' ? '2px solid #a78bfa' : '2px solid transparent', transition:'all 0.2s'}}>
+                🎵 Queue {queue.length > 0 && <span style={{background:'#7c3aed', color:'white', fontSize:'10px', borderRadius:'99px', padding:'1px 6px', marginLeft:'4px'}}>{queue.length}</span>}
+              </button>
+            </div>
 
-                {/* ✅ FIX: Keep both panels mounted, just hide the inactive one */}
-                {/* This prevents unmount/remount which was wiping state */}
-                <div style={{flex:1, overflow:'hidden', display:'flex', flexDirection:'column'}}>
-                  <div style={{display: rightTab === 'chat' ? 'flex' : 'none', flex:1, flexDirection:'column', overflow:'hidden'}}>
-                    <Chat
-                      roomId={roomId}
-                      userName={userName}
-                      messages={chatMessages}
-                      onNewMessage={handleNewChatMessage}
-                    />
-                  </div>
-                  <div style={{display: rightTab === 'queue' ? 'flex' : 'none', flex:1, flexDirection:'column', overflow:'hidden'}}>
-                    <Queue
-                      queue={queue}
-                      currentSong={currentSong}
-                      onRemove={handleRemoveFromQueue}
-                      onPlayNext={handlePlayFromQueue}
-                    />
-                  </div>
-                </div>
-              </>
-            )}
+            {/* Keep both mounted, hide inactive */}
+            <div style={{flex:1, overflow:'hidden', display:'flex', flexDirection:'column'}}>
+              <div style={{display: rightTab === 'chat' ? 'flex' : 'none', flex:1, flexDirection:'column', overflow:'hidden'}}>
+                <Chat roomId={roomId} userName={userName} messages={chatMessages} onNewMessage={handleNewChatMessage} />
+              </div>
+              <div style={{display: rightTab === 'queue' ? 'flex' : 'none', flex:1, flexDirection:'column', overflow:'hidden'}}>
+                <Queue queue={queue} currentSong={currentSong} onRemove={handleRemoveFromQueue} onPlayNext={handlePlayFromQueue} />
+              </div>
+            </div>
           </div>
         </div>
 
