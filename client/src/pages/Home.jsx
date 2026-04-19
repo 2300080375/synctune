@@ -61,7 +61,7 @@ export default function Home() {
           <p style={{color:'#6b6a84', fontSize:'14px', marginTop:'6px'}}>Listen together, in perfect sync</p>
         </div>
 
-        {/* Card */}
+        {/* Main Card */}
         <div style={{
           background:'rgba(255,255,255,0.025)', borderRadius:'20px',
           border:'1px solid rgba(255,255,255,0.07)',
@@ -79,8 +79,8 @@ export default function Home() {
                   display:'flex', alignItems:'center', justifyContent:'center', gap:'8px',
                   transition:'transform 0.15s, box-shadow 0.15s', marginBottom:'20px'
                 }}
-                onMouseEnter={e => { e.target.style.transform='translateY(-1px)'; e.target.style.boxShadow='0 6px 32px rgba(124,58,237,0.5)'; }}
-                onMouseLeave={e => { e.target.style.transform='none'; e.target.style.boxShadow='0 4px 24px rgba(124,58,237,0.4)'; }}
+                onMouseEnter={e => { e.currentTarget.style.transform='translateY(-1px)'; e.currentTarget.style.boxShadow='0 6px 32px rgba(124,58,237,0.5)'; }}
+                onMouseLeave={e => { e.currentTarget.style.transform='none'; e.currentTarget.style.boxShadow='0 4px 24px rgba(124,58,237,0.4)'; }}
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 4v16m8-8H4"/></svg>
                 Create a Room
@@ -166,9 +166,24 @@ export default function Home() {
               </button>
             </div>
           )}
+
+          {/* Added For You Button */}
+          <button 
+            onClick={() => navigate('/for-you/create')}
+            style={{ 
+              marginTop: '16px', width: '100%', padding: '13px', borderRadius: '12px', 
+              border: '1px solid rgba(167,139,250,0.3)', background: 'rgba(167,139,250,0.08)', 
+              color: '#a78bfa', fontWeight: 600, fontSize: '14px', cursor: 'pointer',
+              transition: 'all 0.2s ease'
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background='rgba(167,139,250,0.15)'; e.currentTarget.style.borderColor='rgba(167,139,250,0.5)'; }}
+            onMouseLeave={e => { e.currentTarget.style.background='rgba(167,139,250,0.08)'; e.currentTarget.style.borderColor='rgba(167,139,250,0.3)'; }}
+          >
+            💝 Create a "For You" Gift
+          </button>
         </div>
 
-        {/* Features */}
+        {/* Features Footer */}
         <div style={{display:'grid', gridTemplateColumns:'repeat(4, 1fr)', gap:'8px', marginTop:'16px'}}>
           {[{icon:'🔍',label:'Search'},{icon:'🔄',label:'Sync'},{icon:'💬',label:'Chat'},{icon:'🎵',label:'320kbps'}].map(f => (
             <div key={f.label} style={{textAlign:'center', padding:'12px 8px', borderRadius:'12px', background:'rgba(255,255,255,0.025)', border:'1px solid rgba(255,255,255,0.05)'}}>

@@ -3,6 +3,8 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { initSocket } from './socket';
 import Home from './pages/Home';
 import Room from './pages/Room';
+import ForYouCreate from './components/ForYouCreate';
+import ForYouView from './components/ForYouView';
 import Toast from './components/Toast';
 
 export default function App() {
@@ -17,6 +19,8 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/room/:roomId" element={<Room />} />
+          <Route path="/for-you/create" element={<ForYouCreate />} />
+          <Route path="/for-you/:giftId" element={<ForYouView />} />
         </Routes>
       </div>
     </Router>
