@@ -13,7 +13,7 @@ const io = new Server(server, {
 });
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
 const PORT = 3001;
 
@@ -199,11 +199,12 @@ io.on('connection', (socket) => {
   });
 
   // ✅ CHAT
-  socket.on('chat-message', ({ roomId, user, text, time, msgType = 'text', stickerId, gifUrl, gifTitle }) => {
-    const message = { user, text, time, msgType, stickerId, gifUrl, gifTitle };
+  socket.on('chat-message', ({ roomId, user, text, time, msgType = 'text', stickerId, gifUrl, gifTitle, uploadData, uploadName }) => {
+    const message = { user, text, time, msgType, stickerId, gifUrl, gifTitle, uploadData, uploadName };
     roomManager.addChatMessage(roomId, message);
     socket.to(roomId).emit('chat-message', message);
-    console.log(`💬 Chat [${roomId}] ${user}: ${text}`);
+    const isUpload = msgType.startsWith('upload-');
+    console.log(`💬 Chat [${roomId}] ${user}: ${isUpload ? `[${msgType} - ${uploadName || 'file'}]` : text}`);
   });
 
   // ✅ QUEUE — Add

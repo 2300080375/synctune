@@ -25,7 +25,7 @@ const EMOJI_CATEGORIES = [
   },
 ];
 
-// ─── Sticker Data ─────────────────────────────────────────────────────────────
+// ─── Sticker Packs ────────────────────────────────────────────────────────────
 const STICKER_PACKS = [
   {
     name: 'Vibes',
@@ -68,27 +68,34 @@ const STICKER_PACKS = [
   },
 ];
 
-// ─── GIF via Tenor ────────────────────────────────────────────────────────────
+// ─── Tenor GIF API ────────────────────────────────────────────────────────────
 const TENOR_KEY = 'AIzaSyAyimkuYQYF_FXVALexPmasa5gSpV4bJj8';
 
 const parseGifs = (results) =>
   (results || []).map(r => ({
     id: r.id,
     url: r.media_formats?.gif?.url || r.media_formats?.tinygif?.url,
-    preview: r.media_formats?.tinygif?.url || r.media_formats?.gif?.url,
+    preview: r.media_formats?.tinygif?.url || r.media_formats?.nanogif?.url || r.media_formats?.gif?.url,
     title: r.content_description,
   })).filter(g => g.url);
 
 async function fetchGifs(query) {
-  const endpoint = query
-    ? `https://tenor.googleapis.com/v2/search?q=${encodeURIComponent(query)}&key=${TENOR_KEY}&limit=20&media_filter=gif`
-    : `https://tenor.googleapis.com/v2/featured?key=${TENOR_KEY}&limit=20&media_filter=gif`;
-  const res = await fetch(endpoint);
+  const params = new URLSearchParams({
+    key: TENOR_KEY,
+    limit: '24',
+    media_filter: 'tinygif,gif',
+    contentfilter: 'medium',
+    ...(query ? { q: query } : {}),
+  });
+  const base = 'https://tenor.googleapis.com/v2';
+  const url = query ? `${base}/search?${params}` : `${base}/featured?${params}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Tenor ${res.status}`);
   const data = await res.json();
   return parseGifs(data.results);
 }
 
-// ─── Message bubble content ───────────────────────────────────────────────────
+// ─── Message Content Renderer ─────────────────────────────────────────────────
 function MessageContent({ msg }) {
   if (msg.msgType === 'sticker') {
     const sticker = STICKER_PACKS.flatMap(p => p.stickers).find(s => s.id === msg.stickerId);
@@ -104,44 +111,49 @@ function MessageContent({ msg }) {
     );
   }
   if (msg.msgType === 'gif') {
-    return (
-      <img
-        src={msg.gifUrl}
-        alt={msg.gifTitle || 'GIF'}
-        style={{ maxWidth: '180px', borderRadius: '12px', display: 'block' }}
-        loading="lazy"
-      />
-    );
+    return <img src={msg.gifUrl} alt={msg.gifTitle || 'GIF'} style={{ maxWidth: '180px', borderRadius: '12px', display: 'block' }} loading="lazy" />;
+  }
+  if (msg.msgType === 'upload-image') {
+    return <img src={msg.uploadData} alt={msg.uploadName || 'image'} style={{ maxWidth: '200px', maxHeight: '200px', borderRadius: '12px', display: 'block', objectFit: 'cover' }} loading="lazy" />;
+  }
+  if (msg.msgType === 'upload-gif') {
+    return <img src={msg.uploadData} alt={msg.uploadName || 'GIF'} style={{ maxWidth: '200px', borderRadius: '12px', display: 'block' }} loading="lazy" />;
+  }
+  if (msg.msgType === 'upload-video') {
+    return <video src={msg.uploadData} autoPlay loop muted playsInline style={{ maxWidth: '200px', maxHeight: '160px', borderRadius: '12px', display: 'block', objectFit: 'cover' }} />;
   }
   return <span>{msg.text}</span>;
 }
 
-// ─── Main Component ───────────────────────────────────────────────────────────
+// ─── Main Chat Component ──────────────────────────────────────────────────────
 export default function Chat({ roomId, userName, messages = [], onNewMessage }) {
   const [input, setInput]             = useState('');
-  const [panel, setPanel]             = useState(null); // null | 'emoji' | 'sticker' | 'gif'
+  // panel: null | 'emoji' | 'attach'
+  const [panel, setPanel]             = useState(null);
+  // attachTab: 'sticker' | 'gif' | 'image' | 'video'
+  const [attachTab, setAttachTab]     = useState('sticker');
   const [emojiCat, setEmojiCat]       = useState(0);
   const [stickerPack, setStickerPack] = useState(0);
   const [gifQuery, setGifQuery]       = useState('');
   const [gifs, setGifs]               = useState([]);
   const [gifsLoading, setGifsLoading] = useState(false);
+  const [gifError, setGifError]       = useState('');
+  const [uploadError, setUploadError] = useState('');
 
   const bottomRef   = useRef(null);
   const msgBoxRef   = useRef(null);
   const inputRef    = useRef(null);
-  const panelRef    = useRef(null);
+  const sheetRef    = useRef(null);
+  const fileInputRef = useRef(null);
 
-  // scrollbar
   const [thumbH, setThumbH]     = useState(0);
   const [thumbTop, setThumbTop] = useState(0);
   const [dragging, setDragging] = useState(false);
-  const dragY    = useRef(0);
-  const dragTop  = useRef(0);
+  const dragY   = useRef(0);
+  const dragTop = useRef(0);
 
-  // ── auto scroll
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
-  // ── scrollbar
   const updateThumb = () => {
     const el = msgBoxRef.current; if (!el) return;
     const ratio = el.clientHeight / el.scrollHeight;
@@ -166,24 +178,38 @@ export default function Chat({ roomId, userName, messages = [], onNewMessage }) 
     return () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
   }, [dragging]);
 
-  // ── close panel on outside click
+  // Close sheet on outside click
   useEffect(() => {
-    const h = (e) => { if (panelRef.current && !panelRef.current.contains(e.target)) setPanel(null); };
+    const h = (e) => { if (sheetRef.current && !sheetRef.current.contains(e.target)) setPanel(null); };
     if (panel) document.addEventListener('mousedown', h);
     return () => document.removeEventListener('mousedown', h);
   }, [panel]);
 
-  // ── load GIFs when panel opens
+  // Auto-load GIFs when GIF tab opens
   useEffect(() => {
-    if (panel === 'gif' && gifs.length === 0) {
-      setGifsLoading(true);
-      fetchGifs('').then(g => { setGifs(g); setGifsLoading(false); }).catch(() => setGifsLoading(false));
+    if (panel === 'attach' && attachTab === 'gif' && gifs.length === 0 && !gifsLoading) {
+      loadGifs('');
     }
-  }, [panel]);
+  }, [panel, attachTab]);
 
-  const togglePanel = (name) => { setPanel(p => p === name ? null : name); };
+  const loadGifs = async (q) => {
+    setGifsLoading(true); setGifError('');
+    try {
+      const g = await fetchGifs(q);
+      setGifs(g);
+      if (g.length === 0) setGifError('No GIFs found. Try a different search.');
+    } catch {
+      setGifError('Could not load GIFs. Check your connection and try again.');
+    } finally {
+      setGifsLoading(false);
+    }
+  };
 
-  // ── senders
+  const handleGifSearch = (e) => { e?.preventDefault(); loadGifs(gifQuery); };
+
+  const openAttach = () => { setPanel(p => p === 'attach' ? null : 'attach'); setAttachTab('sticker'); };
+  const openEmoji  = () => { setPanel(p => p === 'emoji'  ? null : 'emoji'); };
+
   const buildMsg = (extra) => ({
     user: userName,
     time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -193,62 +219,80 @@ export default function Chat({ roomId, userName, messages = [], onNewMessage }) 
   const sendText = (e) => {
     e?.preventDefault();
     const text = input.trim(); if (!text) return;
-    const msg = buildMsg({ text, msgType: 'text' });
-    onNewMessage(msg);
+    onNewMessage(buildMsg({ text, msgType: 'text' }));
     emitChatMessage(roomId, userName, text, 'text');
     setInput(''); setPanel(null);
   };
 
-  const sendEmoji = (em) => { setInput(p => p + em); inputRef.current?.focus(); };
+  const sendEmoji   = (em) => { setInput(p => p + em); inputRef.current?.focus(); };
 
   const sendSticker = (sticker) => {
-    const msg = buildMsg({ text: '', msgType: 'sticker', stickerId: sticker.id });
-    onNewMessage(msg);
+    onNewMessage(buildMsg({ text: '', msgType: 'sticker', stickerId: sticker.id }));
     emitChatMessage(roomId, userName, '', 'sticker', { stickerId: sticker.id });
     setPanel(null);
   };
 
   const sendGif = (gif) => {
-    const msg = buildMsg({ text: '', msgType: 'gif', gifUrl: gif.url, gifTitle: gif.title });
-    onNewMessage(msg);
+    onNewMessage(buildMsg({ text: '', msgType: 'gif', gifUrl: gif.url, gifTitle: gif.title }));
     emitChatMessage(roomId, userName, '', 'gif', { gifUrl: gif.url, gifTitle: gif.title });
     setPanel(null);
   };
 
-  const handleGifSearch = async (e) => {
-    e?.preventDefault(); setGifsLoading(true);
-    const g = await fetchGifs(gifQuery).catch(() => []);
-    setGifs(g); setGifsLoading(false);
+  const showErr = (msg) => { setUploadError(msg); setTimeout(() => setUploadError(''), 3500); };
+
+  const handleFileSelect = (e) => {
+    const file = e.target.files?.[0];
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    if (!file) return;
+    const isImage = file.type.startsWith('image/') && file.type !== 'image/gif';
+    const isGif   = file.type === 'image/gif';
+    const isVideo = file.type.startsWith('video/');
+    if (!isImage && !isGif && !isVideo) { showErr('Unsupported file type.'); return; }
+    if (file.size > 5 * 1024 * 1024) { showErr('File too large (max 5MB).'); return; }
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const msgType = isGif ? 'upload-gif' : isVideo ? 'upload-video' : 'upload-image';
+      const uploadData = ev.target.result;
+      const uploadName = file.name;
+      onNewMessage(buildMsg({ text: '', msgType, uploadData, uploadName }));
+      emitChatMessage(roomId, userName, '', msgType, { uploadData, uploadName });
+      setPanel(null);
+    };
+    reader.readAsDataURL(file);
   };
 
   const showThumb = thumbH < (msgBoxRef.current?.clientHeight || 0);
-
-  // ── shared icon btn style
-  const iconBtn = (active) => ({
-    background: active ? 'rgba(167,139,250,0.12)' : 'transparent',
-    border: 'none', cursor: 'pointer', padding: '5px', borderRadius: '8px',
-    color: active ? '#a78bfa' : '#55546a', display: 'flex',
-    alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-    transition: 'color 0.15s, background 0.15s',
-  });
+  const sheetH = (panel === 'attach' && attachTab === 'gif') ? '330px' : '280px';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden', position: 'relative' }}>
+      <style>{`
+        .cs::-webkit-scrollbar{display:none}
+        @keyframes msgIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes stickerPop{0%{transform:scale(.5);opacity:0}70%{transform:scale(1.12)}100%{transform:scale(1);opacity:1}}
+        @keyframes sheetUp{from{transform:translateY(100%);opacity:0}to{transform:translateY(0);opacity:1}}
+        @keyframes spin{to{transform:rotate(360deg)}}
+        .at-tab{padding:9px 12px;border:none;background:transparent;font-size:11px;font-weight:700;cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;transition:color .15s,border-color .15s;letter-spacing:.3px}
+        .at-tab.on{color:#a78bfa;border-bottom-color:#a78bfa}
+        .at-tab:not(.on){color:#55546a}
+        .gif-card{border-radius:8px;overflow:hidden;margin-bottom:6px;cursor:pointer;break-inside:avoid;border:2px solid transparent;transition:border-color .15s}
+        .gif-card:active{border-color:#a78bfa}
+        .s-btn{border:none;border-radius:14px;aspect-ratio:1;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:30px;box-shadow:0 2px 8px rgba(0,0,0,.3);transition:transform .15s,box-shadow .15s}
+        .s-btn:active{transform:scale(.92)}
+        .e-btn{background:none;border:none;cursor:pointer;font-size:22px;padding:5px;border-radius:8px;line-height:1}
+        .e-btn:active{background:rgba(255,255,255,.1)}
+      `}</style>
 
       {/* ── MESSAGES ── */}
       <div style={{ flex: 1, position: 'relative', minHeight: 0, display: 'flex' }}>
-        <div ref={msgBoxRef} style={{ flex: 1, overflowY: 'scroll', padding: '12px 6px 12px 12px', display: 'flex', flexDirection: 'column', gap: '6px', scrollbarWidth: 'none' }}>
-          <style>{`
-            div::-webkit-scrollbar{display:none}
-            @keyframes msgIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
-            @keyframes stickerPop{0%{transform:scale(.5);opacity:0}70%{transform:scale(1.12)}100%{transform:scale(1);opacity:1}}
-          `}</style>
+        <div ref={msgBoxRef} className="cs"
+          style={{ flex: 1, overflowY: 'scroll', padding: '12px 6px 12px 12px', display: 'flex', flexDirection: 'column', gap: '6px', scrollbarWidth: 'none' }}>
 
           {messages.length === 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '10px', color: '#55546a' }}>
               <div style={{ fontSize: '30px' }}>💬</div>
-              <p style={{ fontSize: '13px' }}>Start the conversation!</p>
-              <p style={{ fontSize: '11px', color: '#3d3c52' }}>Emojis • Stickers • GIFs</p>
+              <p style={{ fontSize: '13px', margin: 0 }}>Start the conversation!</p>
+              <p style={{ fontSize: '11px', color: '#3d3c52', margin: 0 }}>Stickers • GIFs • Images • Videos</p>
             </div>
           ) : messages.map((msg, i) => {
             if (msg.type === 'system') return (
@@ -256,10 +300,8 @@ export default function Chat({ roomId, userName, messages = [], onNewMessage }) 
                 <span style={{ fontSize: '11px', color: '#55546a', background: 'rgba(255,255,255,0.04)', padding: '3px 10px', borderRadius: '99px' }}>{msg.text}</span>
               </div>
             );
-
             const isOwn  = msg.isOwn || msg.user === userName;
-            const isMedia = msg.msgType === 'sticker' || msg.msgType === 'gif';
-
+            const isMedia = ['sticker','gif','upload-image','upload-gif','upload-video'].includes(msg.msgType);
             return (
               <div key={i} style={{ display: 'flex', gap: '8px', justifyContent: isOwn ? 'flex-end' : 'flex-start', animation: 'msgIn 0.18s ease' }}>
                 {!isOwn && (
@@ -268,8 +310,7 @@ export default function Chat({ roomId, userName, messages = [], onNewMessage }) 
                   </div>
                 )}
                 <div style={{ maxWidth: '80%', display: 'flex', flexDirection: 'column', gap: '3px', alignItems: isOwn ? 'flex-end' : 'flex-start' }}>
-                  {!isOwn && <p style={{ fontSize: '10px', color: '#55546a', paddingLeft: '4px' }}>{msg.user}</p>}
-
+                  {!isOwn && <p style={{ fontSize: '10px', color: '#55546a', paddingLeft: '4px', margin: 0 }}>{msg.user}</p>}
                   <div style={{ animation: msg.msgType === 'sticker' ? 'stickerPop 0.35s cubic-bezier(.175,.885,.32,1.275)' : 'none' }}>
                     {isMedia ? (
                       <MessageContent msg={msg} />
@@ -279,8 +320,7 @@ export default function Chat({ roomId, userName, messages = [], onNewMessage }) 
                       </div>
                     )}
                   </div>
-
-                  <p style={{ fontSize: '10px', color: '#3d3c52', paddingLeft: '4px', paddingRight: '4px' }}>{msg.time}</p>
+                  <p style={{ fontSize: '10px', color: '#3d3c52', paddingLeft: '4px', paddingRight: '4px', margin: 0 }}>{msg.time}</p>
                 </div>
               </div>
             );
@@ -288,197 +328,190 @@ export default function Chat({ roomId, userName, messages = [], onNewMessage }) 
           <div ref={bottomRef} />
         </div>
 
-        {/* ── Scrollbar track (always visible, click to jump) ── */}
-        <div
-          style={{ width: '16px', position: 'relative', flexShrink: 0, margin: '6px 2px', cursor: 'pointer', userSelect: 'none' }}
+        {/* Scrollbar */}
+        <div style={{ width: '16px', position: 'relative', flexShrink: 0, margin: '6px 2px', cursor: 'pointer', userSelect: 'none' }}
           onClick={(e) => {
             const el = msgBoxRef.current; if (!el) return;
             const rect = e.currentTarget.getBoundingClientRect();
-            const ratio = (e.clientY - rect.top) / rect.height;
-            el.scrollTop = ratio * (el.scrollHeight - el.clientHeight);
-          }}
-        >
-          {/* Track groove */}
+            el.scrollTop = ((e.clientY - rect.top) / rect.height) * (el.scrollHeight - el.clientHeight);
+          }}>
           <div style={{ position: 'absolute', left: '50%', transform: 'translateX(-50%)', top: 0, bottom: 0, width: '4px', borderRadius: '99px', background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.04)' }} />
-
-          {/* Draggable thumb */}
           {showThumb && (
             <div
-              onMouseDown={(e) => {
-                e.preventDefault(); e.stopPropagation();
-                setDragging(true);
-                dragY.current = e.clientY;
-                dragTop.current = msgBoxRef.current?.scrollTop || 0;
-              }}
-              onMouseEnter={e => {
-                if (!dragging) {
-                  e.currentTarget.style.width = '10px';
-                  e.currentTarget.style.background = 'linear-gradient(180deg,#c4b5fd,#7c3aed)';
-                  e.currentTarget.style.boxShadow = '0 0 10px rgba(167,139,250,0.6)';
-                }
-              }}
-              onMouseLeave={e => {
-                if (!dragging) {
-                  e.currentTarget.style.width = '8px';
-                  e.currentTarget.style.background = 'rgba(167,139,250,0.6)';
-                  e.currentTarget.style.boxShadow = 'none';
-                }
-              }}
-              style={{
-                position: 'absolute',
-                left: '50%', transform: 'translateX(-50%)',
-                top: `${thumbTop}px`,
-                height: `${thumbH}px`,
-                width: dragging ? '10px' : '8px',
-                borderRadius: '99px',
-                background: dragging ? 'linear-gradient(180deg,#c4b5fd,#7c3aed)' : 'rgba(167,139,250,0.6)',
-                cursor: dragging ? 'grabbing' : 'grab',
-                boxShadow: dragging ? '0 0 12px rgba(167,139,250,0.8)' : 'none',
-                transition: dragging ? 'none' : 'width 0.15s, background 0.15s, box-shadow 0.15s',
-                userSelect: 'none',
-              }}
+              onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); setDragging(true); dragY.current = e.clientY; dragTop.current = msgBoxRef.current?.scrollTop || 0; }}
+              style={{ position: 'absolute', left: '50%', transform: 'translateX(-50%)', top: `${thumbTop}px`, height: `${thumbH}px`, width: dragging ? '10px' : '8px', borderRadius: '99px', background: dragging ? 'linear-gradient(180deg,#c4b5fd,#7c3aed)' : 'rgba(167,139,250,0.6)', cursor: dragging ? 'grabbing' : 'grab', transition: dragging ? 'none' : 'width 0.15s', userSelect: 'none' }}
             />
           )}
         </div>
       </div>
 
-      {/* ── FLOATING PANEL ── */}
+      {/* ── BOTTOM SHEET ── */}
       {panel && (
-        <div ref={panelRef} style={{ position: 'absolute', bottom: '58px', left: '8px', right: '8px', background: 'rgba(16,16,26,0.98)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '16px', boxShadow: '0 -8px 32px rgba(0,0,0,0.55)', backdropFilter: 'blur(24px)', zIndex: 50, height: '260px', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        <div ref={sheetRef} style={{ position: 'absolute', bottom: '58px', left: 0, right: 0, background: '#0e0e1a', borderTop: '1px solid rgba(255,255,255,0.08)', borderRadius: '18px 18px 0 0', boxShadow: '0 -10px 40px rgba(0,0,0,0.65)', zIndex: 50, height: sheetH, display: 'flex', flexDirection: 'column', overflow: 'hidden', animation: 'sheetUp 0.22s cubic-bezier(.32,1,.4,1)' }}>
 
           {/* ── EMOJI ── */}
-          {panel === 'emoji' && (
-            <>
-              <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.06)', flexShrink: 0 }}>
-                {EMOJI_CATEGORIES.map((cat, ci) => (
-                  <button key={ci} onClick={() => setEmojiCat(ci)} title={cat.name}
-                    style={{ flex: 1, padding: '10px 4px', border: 'none', background: 'transparent', fontSize: '16px', cursor: 'pointer', borderBottom: emojiCat === ci ? '2px solid #a78bfa' : '2px solid transparent', opacity: emojiCat === ci ? 1 : 0.45, transition: 'opacity 0.15s' }}>
-                    {cat.label}
-                  </button>
-                ))}
-              </div>
-              <div style={{ flex: 1, overflowY: 'auto', padding: '8px', display: 'flex', flexWrap: 'wrap', gap: '1px', alignContent: 'flex-start' }}>
-                {EMOJI_CATEGORIES[emojiCat].emojis.map((em, ei) => (
-                  <button key={ei} onClick={() => sendEmoji(em)}
-                    style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '22px', padding: '4px', borderRadius: '8px', lineHeight: 1, transition: 'transform 0.1s, background 0.1s' }}
-                    onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.08)'; e.currentTarget.style.transform = 'scale(1.25)'; }}
-                    onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.transform = 'scale(1)'; }}>
-                    {em}
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
+          {panel === 'emoji' && <>
+            <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.06)', flexShrink: 0 }}>
+              {EMOJI_CATEGORIES.map((cat, ci) => (
+                <button key={ci} onClick={() => setEmojiCat(ci)} title={cat.name}
+                  style={{ flex: 1, padding: '10px 4px', border: 'none', background: 'transparent', fontSize: '17px', cursor: 'pointer', borderBottom: emojiCat === ci ? '2px solid #a78bfa' : '2px solid transparent', opacity: emojiCat === ci ? 1 : 0.4, transition: 'opacity 0.15s' }}>
+                  {cat.label}
+                </button>
+              ))}
+            </div>
+            <div className="cs" style={{ flex: 1, overflowY: 'auto', padding: '8px', display: 'flex', flexWrap: 'wrap', gap: '2px', alignContent: 'flex-start' }}>
+              {EMOJI_CATEGORIES[emojiCat].emojis.map((em, ei) => (
+                <button key={ei} className="e-btn" onClick={() => sendEmoji(em)}>{em}</button>
+              ))}
+            </div>
+          </>}
 
-          {/* ── STICKERS ── */}
-          {panel === 'sticker' && (
-            <>
-              <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.06)', flexShrink: 0, padding: '0 8px' }}>
+          {/* ── ATTACH ── */}
+          {panel === 'attach' && <>
+            {/* Tab bar: Stickers | GIFs | Image | Video */}
+            <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.07)', flexShrink: 0, padding: '0 4px', overflowX: 'auto' }}>
+              {[
+                { id: 'sticker', label: '🎭 Stickers' },
+                { id: 'gif',     label: '🎞 GIFs' },
+                { id: 'image',   label: '🖼 Image' },
+                { id: 'video',   label: '🎬 Video' },
+              ].map(t => (
+                <button key={t.id} className={`at-tab${attachTab === t.id ? ' on' : ''}`} onClick={() => setAttachTab(t.id)}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Stickers */}
+            {attachTab === 'sticker' && <>
+              <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.05)', flexShrink: 0, padding: '0 8px' }}>
                 {STICKER_PACKS.map((pack, pi) => (
                   <button key={pi} onClick={() => setStickerPack(pi)}
-                    style={{ padding: '9px 12px', border: 'none', background: 'transparent', color: stickerPack === pi ? '#a78bfa' : '#55546a', fontSize: '11px', fontWeight: 600, cursor: 'pointer', borderBottom: stickerPack === pi ? '2px solid #a78bfa' : '2px solid transparent', transition: 'color 0.15s', whiteSpace: 'nowrap' }}>
+                    style={{ padding: '8px 12px', border: 'none', background: 'transparent', color: stickerPack === pi ? '#a78bfa' : '#55546a', fontSize: '11px', fontWeight: 600, cursor: 'pointer', borderBottom: stickerPack === pi ? '2px solid #a78bfa' : '2px solid transparent', transition: 'color 0.15s', whiteSpace: 'nowrap' }}>
                     {pack.name}
                   </button>
                 ))}
               </div>
-              <div style={{ flex: 1, overflowY: 'auto', padding: '12px', display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px' }}>
+              <div className="cs" style={{ flex: 1, overflowY: 'auto', padding: '12px', display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px' }}>
                 {STICKER_PACKS[stickerPack].stickers.map(s => (
-                  <button key={s.id} onClick={() => sendSticker(s)} title={s.label}
-                    style={{ background: s.bg, border: 'none', borderRadius: '14px', aspectRatio: '1', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '30px', boxShadow: '0 2px 8px rgba(0,0,0,0.3)', transition: 'transform 0.15s, box-shadow 0.15s' }}
-                    onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.1)'; e.currentTarget.style.boxShadow = '0 4px 20px rgba(0,0,0,0.45)'; }}
-                    onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; e.currentTarget.style.boxShadow = '0 2px 8px rgba(0,0,0,0.3)'; }}>
-                    {s.emoji}
-                  </button>
+                  <button key={s.id} className="s-btn" onClick={() => sendSticker(s)} title={s.label} style={{ background: s.bg }}>{s.emoji}</button>
                 ))}
               </div>
-            </>
-          )}
+            </>}
 
-          {/* ── GIFs ── */}
-          {panel === 'gif' && (
-            <>
-              <form onSubmit={handleGifSearch} style={{ display: 'flex', gap: '8px', padding: '8px', flexShrink: 0, borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+            {/* GIFs */}
+            {attachTab === 'gif' && <>
+              <div style={{ display: 'flex', gap: '8px', padding: '8px 10px', flexShrink: 0 }}>
                 <input
                   value={gifQuery} onChange={e => setGifQuery(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleGifSearch()}
                   placeholder="Search GIFs..."
-                  style={{ flex: 1, padding: '7px 12px', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '8px', color: '#f1f0ff', fontSize: '12px', outline: 'none', fontFamily: 'inherit' }}
-                  onFocus={e => e.target.style.borderColor = 'rgba(167,139,250,0.4)'}
-                  onBlur={e => e.target.style.borderColor = 'rgba(255,255,255,0.08)'}
+                  style={{ flex: 1, padding: '8px 12px', background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '10px', color: '#f1f0ff', fontSize: '13px', outline: 'none', fontFamily: 'inherit' }}
                 />
-                <button type="submit" style={{ padding: '7px 12px', borderRadius: '8px', border: 'none', background: 'linear-gradient(135deg,#7c3aed,#a855f7)', color: 'white', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}>🔍</button>
-              </form>
-
-              <div style={{ flex: 1, overflowY: 'auto', padding: '8px' }}>
+                <button onClick={handleGifSearch}
+                  style={{ padding: '8px 14px', borderRadius: '10px', border: 'none', background: 'linear-gradient(135deg,#7c3aed,#a855f7)', color: 'white', fontSize: '13px', fontWeight: 700, cursor: 'pointer', flexShrink: 0 }}>
+                  🔍
+                </button>
+              </div>
+              <div className="cs" style={{ flex: 1, overflowY: 'auto', padding: '0 10px 8px' }}>
                 {gifsLoading ? (
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#55546a', gap: '8px', fontSize: '13px' }}>
-                    <div style={{ width: '14px', height: '14px', border: '2px solid rgba(167,139,250,0.3)', borderTopColor: '#a78bfa', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '120px', color: '#55546a', gap: '10px', fontSize: '13px' }}>
+                    <div style={{ width: '16px', height: '16px', border: '2px solid rgba(167,139,250,0.3)', borderTopColor: '#a78bfa', borderRadius: '50%', animation: 'spin 0.7s linear infinite', flexShrink: 0 }} />
                     Loading GIFs...
                   </div>
-                ) : gifs.length === 0 ? (
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#55546a', fontSize: '13px' }}>No GIFs found</div>
+                ) : gifError ? (
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '120px', color: '#f87171', fontSize: '12px', textAlign: 'center', padding: '0 16px' }}>{gifError}</div>
                 ) : (
                   <>
                     <div style={{ columns: '2', columnGap: '6px' }}>
                       {gifs.map(gif => (
-                        <div key={gif.id} onClick={() => sendGif(gif)}
-                          style={{ borderRadius: '8px', overflow: 'hidden', marginBottom: '6px', cursor: 'pointer', breakInside: 'avoid', border: '2px solid transparent', transition: 'border-color 0.15s, transform 0.15s' }}
-                          onMouseEnter={e => { e.currentTarget.style.borderColor = '#a78bfa'; e.currentTarget.style.transform = 'scale(1.02)'; }}
-                          onMouseLeave={e => { e.currentTarget.style.borderColor = 'transparent'; e.currentTarget.style.transform = 'scale(1)'; }}>
-                          <img src={gif.preview} alt={gif.title} style={{ width: '100%', display: 'block', borderRadius: '6px' }} loading="lazy" />
+                        <div key={gif.id} className="gif-card" onClick={() => sendGif(gif)}>
+                          <img src={gif.preview} alt={gif.title || 'gif'} style={{ width: '100%', display: 'block', borderRadius: '6px' }} loading="lazy" />
                         </div>
                       ))}
                     </div>
-                    <div style={{ textAlign: 'center', padding: '6px 0 2px', fontSize: '10px', color: '#3d3c52' }}>Powered by Tenor</div>
+                    {gifs.length > 0 && <div style={{ textAlign: 'center', padding: '6px 0 2px', fontSize: '10px', color: '#3d3c52' }}>Powered by Tenor</div>}
                   </>
                 )}
               </div>
-            </>
-          )}
+            </>}
+
+            {/* Image upload */}
+            {attachTab === 'image' && (
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '14px', padding: '20px' }}>
+                <div style={{ fontSize: '44px' }}>🖼️</div>
+                <p style={{ color: '#c4c3de', fontSize: '14px', fontWeight: 600, margin: 0, textAlign: 'center' }}>Send a photo</p>
+                <p style={{ color: '#55546a', fontSize: '12px', margin: 0, textAlign: 'center' }}>JPG, PNG, WEBP — max 5MB</p>
+                <button
+                  onClick={() => { fileInputRef.current.accept = 'image/jpeg,image/png,image/webp'; fileInputRef.current.click(); }}
+                  style={{ padding: '11px 28px', borderRadius: '12px', border: 'none', background: 'linear-gradient(135deg,#7c3aed,#a855f7)', color: 'white', fontWeight: 700, fontSize: '14px', cursor: 'pointer', boxShadow: '0 4px 18px rgba(124,58,237,0.4)' }}>
+                  Choose Image
+                </button>
+              </div>
+            )}
+
+            {/* Video upload */}
+            {attachTab === 'video' && (
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '14px', padding: '20px' }}>
+                <div style={{ fontSize: '44px' }}>🎬</div>
+                <p style={{ color: '#c4c3de', fontSize: '14px', fontWeight: 600, margin: 0, textAlign: 'center' }}>Send a short video</p>
+                <p style={{ color: '#55546a', fontSize: '12px', margin: 0, textAlign: 'center' }}>MP4, WEBM, MOV — max 5MB{'\n'}Plays as a looping sticker</p>
+                <button
+                  onClick={() => { fileInputRef.current.accept = 'video/mp4,video/webm,video/quicktime'; fileInputRef.current.click(); }}
+                  style={{ padding: '11px 28px', borderRadius: '12px', border: 'none', background: 'linear-gradient(135deg,#ec4899,#8b5cf6)', color: 'white', fontWeight: 700, fontSize: '14px', cursor: 'pointer', boxShadow: '0 4px 18px rgba(236,72,153,0.35)' }}>
+                  Choose Video
+                </button>
+              </div>
+            )}
+          </>}
         </div>
       )}
 
-      {/* ── INPUT BAR ── */}
-      <div style={{ padding: '8px 10px', borderTop: '1px solid rgba(255,255,255,0.05)', flexShrink: 0 }}>
-        <div style={{ display: 'flex', gap: '5px', alignItems: 'center', minWidth: 0 }}>
+      {/* ── INPUT BAR — WhatsApp style ── */}
+      <div style={{ padding: '8px 10px', borderTop: '1px solid rgba(255,255,255,0.05)', flexShrink: 0, background: '#0c0c18' }}>
+        {/* Hidden file input */}
+        <input ref={fileInputRef} type="file" style={{ display: 'none' }} onChange={handleFileSelect} />
 
-          {/* Emoji 😊 */}
-          <button onClick={() => togglePanel('emoji')} title="Emoji" style={iconBtn(panel === 'emoji')}
-            onMouseEnter={e => { if (panel !== 'emoji') e.currentTarget.style.color = '#a78bfa'; }}
-            onMouseLeave={e => { if (panel !== 'emoji') e.currentTarget.style.color = '#55546a'; }}>
-            <span style={{ fontSize: '19px', lineHeight: 1 }}>😊</span>
+        {/* Error toast */}
+        {uploadError && (
+          <div style={{ marginBottom: '6px', padding: '6px 12px', background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: '8px', color: '#fca5a5', fontSize: '11px', textAlign: 'center' }}>
+            {uploadError}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+
+          {/* + button */}
+          <button onClick={openAttach} title="Attachments"
+            style={{ width: '38px', height: '38px', minWidth: '38px', borderRadius: '50%', border: 'none', background: panel === 'attach' ? 'linear-gradient(135deg,#7c3aed,#a855f7)' : 'rgba(255,255,255,0.08)', color: 'white', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, transition: 'background 0.2s, transform 0.2s', transform: panel === 'attach' ? 'rotate(45deg)' : 'rotate(0deg)' }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           </button>
 
-          {/* Sticker 🎭 */}
-          <button onClick={() => togglePanel('sticker')} title="Stickers" style={iconBtn(panel === 'sticker')}
-            onMouseEnter={e => { if (panel !== 'sticker') e.currentTarget.style.color = '#a78bfa'; }}
-            onMouseLeave={e => { if (panel !== 'sticker') e.currentTarget.style.color = '#55546a'; }}>
-            <span style={{ fontSize: '19px', lineHeight: 1 }}>🎭</span>
-          </button>
-
-          {/* GIF badge */}
-          <button onClick={() => togglePanel('gif')} title="GIFs"
-            style={{ background: panel === 'gif' ? 'rgba(167,139,250,0.12)' : 'transparent', border: `1.5px solid ${panel === 'gif' ? '#a78bfa' : 'rgba(255,255,255,0.15)'}`, cursor: 'pointer', padding: '3px 5px', borderRadius: '6px', color: panel === 'gif' ? '#a78bfa' : '#55546a', fontSize: '10px', fontWeight: 800, letterSpacing: '-0.3px', flexShrink: 0, transition: 'all 0.15s' }}
-            onMouseEnter={e => { if (panel !== 'gif') { e.currentTarget.style.color = '#a78bfa'; e.currentTarget.style.borderColor = '#a78bfa'; }}}
-            onMouseLeave={e => { if (panel !== 'gif') { e.currentTarget.style.color = '#55546a'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.15)'; }}}>
-            GIF
-          </button>
-
-          {/* Text input + send — flex:1 with minWidth:0 so it shrinks but send btn stays */}
-          <form onSubmit={sendText} style={{ flex: 1, minWidth: 0, display: 'flex', gap: '6px', alignItems: 'center' }}>
+          {/* Input pill */}
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '22px', padding: '0 6px 0 14px', gap: '2px', minWidth: 0 }}>
             <input
               ref={inputRef}
-              type="text" placeholder="Message..." value={input}
-              onChange={e => setInput(e.target.value)} maxLength={300}
-              style={{ flex: 1, minWidth: 0, padding: '9px 12px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', color: '#f1f0ff', fontSize: '13px', outline: 'none', fontFamily: 'inherit', transition: 'border-color 0.2s' }}
-              onFocus={e => { e.target.style.borderColor = 'rgba(167,139,250,0.4)'; setPanel(null); }}
-              onBlur={e => e.target.style.borderColor = 'rgba(255,255,255,0.07)'}
+              type="text"
+              placeholder="Type a message"
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && sendText()}
+              maxLength={300}
+              onFocus={() => setPanel(null)}
+              style={{ flex: 1, minWidth: 0, padding: '10px 0', background: 'transparent', border: 'none', color: '#f1f0ff', fontSize: '14px', outline: 'none', fontFamily: 'inherit' }}
             />
-            {/* Send button — flexShrink:0 so it NEVER disappears */}
-            <button type="submit" disabled={!input.trim()}
-              style={{ width: '34px', height: '34px', minWidth: '34px', borderRadius: '10px', border: 'none', background: input.trim() ? 'linear-gradient(135deg,#7c3aed,#a855f7)' : 'rgba(255,255,255,0.06)', color: 'white', cursor: input.trim() ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, boxShadow: input.trim() ? '0 2px 12px rgba(124,58,237,0.4)' : 'none', transition: 'background 0.2s, box-shadow 0.2s' }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m22 2-7 20-4-9-9-4 20-7z"/></svg>
+            {/* Emoji trigger inside pill */}
+            <button onClick={openEmoji} title="Emoji"
+              style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: '6px', color: panel === 'emoji' ? '#a78bfa' : '#55546a', display: 'flex', alignItems: 'center', flexShrink: 0, transition: 'color 0.15s' }}>
+              <span style={{ fontSize: '20px', lineHeight: 1 }}>😊</span>
             </button>
-          </form>
+          </div>
+
+          {/* Send button */}
+          <button onClick={sendText} disabled={!input.trim()}
+            style={{ width: '38px', height: '38px', minWidth: '38px', borderRadius: '50%', border: 'none', background: input.trim() ? 'linear-gradient(135deg,#7c3aed,#a855f7)' : 'rgba(255,255,255,0.07)', color: 'white', cursor: input.trim() ? 'pointer' : 'default', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, boxShadow: input.trim() ? '0 2px 14px rgba(124,58,237,0.45)' : 'none', transition: 'background 0.2s, box-shadow 0.2s' }}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m22 2-7 20-4-9-9-4 20-7z"/></svg>
+          </button>
         </div>
       </div>
     </div>
