@@ -72,6 +72,46 @@ app.get('/api/audio', (req, res) => {
 });
 
 ////////////////////////////////////////////////////////////
+// 🎞 TENOR GIF PROXY  (avoids CORS on mobile browsers)
+////////////////////////////////////////////////////////////
+
+const TENOR_KEY = 'AIzaSyAyimkuYQYF_FXVALexPmasa5gSpV4bJj8';
+
+app.get('/api/gifs', (req, res) => {
+  const { q, limit = '24' } = req.query;
+  const params = new URLSearchParams({
+    key: TENOR_KEY,
+    limit,
+    media_filter: 'tinygif,gif',
+    contentfilter: 'medium',
+    ...(q ? { q } : {}),
+  });
+  const apiPath = q ? `/v2/search?${params}` : `/v2/featured?${params}`;
+  console.log(`🎞 GIF ${q ? `search: "${q}"` : 'featured'}`);
+
+  const gifReq = https.get(
+    { hostname: 'tenor.googleapis.com', path: apiPath, headers: { Accept: 'application/json' }, timeout: 8000 },
+    (gifRes) => {
+      let data = '';
+      gifRes.on('data', chunk => data += chunk);
+      gifRes.on('end', () => {
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.status(gifRes.statusCode).send(data);
+      });
+    }
+  );
+  gifReq.on('error', (err) => {
+    console.error('❌ GIF proxy error:', err.message);
+    if (!res.headersSent) res.status(500).json({ error: 'GIF fetch failed' });
+  });
+  gifReq.on('timeout', () => {
+    gifReq.destroy();
+    if (!res.headersSent) res.status(504).json({ error: 'GIF timeout' });
+  });
+});
+
+////////////////////////////////////////////////////////////
 // 🔍 SEARCH PROXY
 ////////////////////////////////////////////////////////////
 

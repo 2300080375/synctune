@@ -68,8 +68,8 @@ const STICKER_PACKS = [
   },
 ];
 
-// ─── Tenor GIF API ────────────────────────────────────────────────────────────
-const TENOR_KEY = 'AIzaSyAyimkuYQYF_FXVALexPmasa5gSpV4bJj8';
+// ─── GIF fetch — proxied through server to avoid CORS on mobile ──────────────
+const GIF_PROXY = `${import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001'}/api/gifs`;
 
 const parseGifs = (results) =>
   (results || []).map(r => ({
@@ -80,20 +80,13 @@ const parseGifs = (results) =>
   })).filter(g => g.url);
 
 async function fetchGifs(query) {
-  const params = new URLSearchParams({
-    key: TENOR_KEY,
-    limit: '24',
-    media_filter: 'tinygif,gif',
-    contentfilter: 'medium',
-    ...(query ? { q: query } : {}),
-  });
-  const base = 'https://tenor.googleapis.com/v2';
-  const url = query ? `${base}/search?${params}` : `${base}/featured?${params}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Tenor ${res.status}`);
+  const params = new URLSearchParams({ limit: '24', ...(query ? { q: query } : {}) });
+  const res = await fetch(`${GIF_PROXY}?${params}`);
+  if (!res.ok) throw new Error(`GIF proxy ${res.status}`);
   const data = await res.json();
   return parseGifs(data.results);
 }
+
 
 // ─── Message Content Renderer ─────────────────────────────────────────────────
 function MessageContent({ msg }) {
