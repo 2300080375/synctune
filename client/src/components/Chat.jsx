@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
-import { emitChatMessage, onChatMessage, offChatMessage, onSystemMessage, offSystemMessage } from '../socket';
+import { emitChatMessage } from '../socket';
 
-export default function Chat({ roomId, userName, chatHistory = [] }) {
-  const [messages, setMessages] = useState([]);
+export default function Chat({ roomId, userName, messages = [], onNewMessage }) {
   const [input, setInput] = useState('');
   const bottomRef = useRef(null);
   const messagesRef = useRef(null);
@@ -14,24 +13,11 @@ export default function Chat({ roomId, userName, chatHistory = [] }) {
   const dragStartY = useRef(0);
   const dragStartScrollTop = useRef(0);
 
-  // ✅ Load chat history
-  useEffect(() => {
-    if (chatHistory && chatHistory.length > 0) {
-      setMessages(chatHistory.map(msg => ({ ...msg, type: 'chat' })));
-    }
-  }, [chatHistory]);
-
-  useEffect(() => {
-    onChatMessage(msg => setMessages(p => [...p, { ...msg, type: 'chat' }]));
-    onSystemMessage(msg => setMessages(p => [...p, { ...msg, type: 'system' }]));
-    return () => { offChatMessage(); offSystemMessage(); };
-  }, []);
-
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // ✅ Update scrollbar thumb on scroll/resize
+  // Update scrollbar thumb on scroll/resize
   const updateThumb = () => {
     const el = messagesRef.current;
     if (!el) return;
@@ -50,7 +36,7 @@ export default function Chat({ roomId, userName, chatHistory = [] }) {
     return () => el.removeEventListener('scroll', updateThumb);
   }, [messages]);
 
-  // ✅ Drag handlers
+  // Drag handlers
   const handleThumbMouseDown = (e) => {
     e.preventDefault();
     setIsDragging(true);
@@ -71,7 +57,6 @@ export default function Chat({ roomId, userName, chatHistory = [] }) {
     if (isDragging) {
       window.addEventListener('mousemove', handleMouseMove);
       window.addEventListener('mouseup', handleMouseUp);
-      // Touch support
       window.addEventListener('touchmove', (e) => handleMouseMove(e.touches[0]));
       window.addEventListener('touchend', handleMouseUp);
     }
@@ -86,7 +71,8 @@ export default function Chat({ roomId, userName, chatHistory = [] }) {
     const text = input.trim();
     if (!text) return;
     const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    setMessages(p => [...p, { user: userName, text, time, type: 'chat', isOwn: true }]);
+    const msg = { user: userName, text, time, type: 'chat', isOwn: true };
+    onNewMessage(msg);
     emitChatMessage(roomId, userName, text);
     setInput('');
   };
@@ -103,7 +89,7 @@ export default function Chat({ roomId, userName, chatHistory = [] }) {
 
       {/* Messages + Custom Scrollbar */}
       <div style={{flex:1, position:'relative', minHeight:0, display:'flex'}}>
-        {/* Messages area — hide native scrollbar */}
+        {/* Messages area */}
         <div
           ref={messagesRef}
           style={{
@@ -151,12 +137,10 @@ export default function Chat({ roomId, userName, chatHistory = [] }) {
           <div ref={bottomRef} />
         </div>
 
-        {/* ✅ Custom Draggable Scrollbar */}
+        {/* Custom Draggable Scrollbar */}
         {showThumb && (
           <div style={{width:'6px', position:'relative', flexShrink:0, margin:'4px 2px'}}>
-            {/* Track */}
             <div style={{position:'absolute', inset:0, borderRadius:'99px', background:'rgba(255,255,255,0.04)'}} />
-            {/* Thumb */}
             <div
               onMouseDown={handleThumbMouseDown}
               onTouchStart={(e) => {

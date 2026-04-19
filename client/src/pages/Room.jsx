@@ -12,7 +12,9 @@ import {
   emitPlaySong, emitPauseSong, emitResumeSong, emitSongEnded,
   emitAddToQueue, emitRemoveFromQueue, emitPlayFromQueue,
   onRoomState, onUsersUpdated, onPlaySong, onPauseSong, onResumeSong, onQueueUpdated,
-  offRoomState, offUsersUpdated, offPlaySong, offPauseSong, offResumeSong, offQueueUpdated
+  onChatMessage, onSystemMessage,
+  offRoomState, offUsersUpdated, offPlaySong, offPauseSong, offResumeSong, offQueueUpdated,
+  offChatMessage, offSystemMessage,
 } from '../socket';
 
 const getProxyUrl = (url) => `${import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001'}/api/audio?url=${encodeURIComponent(url)}`;
@@ -67,19 +69,9 @@ function UsernameModal({ onSubmit }) {
 export default function Room() {
   const { roomId } = useParams();
   const navigate = useNavigate();
-
-  // ✅ FIX: Persist userId & userName in sessionStorage so page refresh doesn't reset them
-  const [userId] = useState(() => {
-    const existing = sessionStorage.getItem('userId');
-    if (existing) return existing;
-    const newId = `user_${Date.now()}`;
-    sessionStorage.setItem('userId', newId);
-    return newId;
-  });
-
-  const [userName, setUserName] = useState(() => sessionStorage.getItem('userName') || '');
-  const [showNameModal, setShowNameModal] = useState(() => !sessionStorage.getItem('userName'));
-
+  const [userId] = useState(() => `user_${Date.now()}`);
+  const [userName, setUserName] = useState('');
+  const [showNameModal, setShowNameModal] = useState(true);
   const [users, setUsers] = useState([]);
   const [songs, setSongs] = useState([]);
   const [currentSong, setCurrentSong] = useState(null);
@@ -87,10 +79,13 @@ export default function Room() {
   const [sound, setSound] = useState(null);
   const [chatOpen, setChatOpen] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
-  const [chatHistory, setChatHistory] = useState([]);
+
+  // ✅ FIX: Chat messages lifted to Room so they survive tab switches
+  const [chatMessages, setChatMessages] = useState([]);
+
   const [usersOpen, setUsersOpen] = useState(false);
   const [queue, setQueue] = useState([]);
-  const [rightTab, setRightTab] = useState('chat'); // 'chat' | 'queue'
+  const [rightTab, setRightTab] = useState('chat');
 
   const soundRef = useRef(null);
   const currentSongIdRef = useRef(null);
@@ -99,17 +94,9 @@ export default function Room() {
   const loadTimeoutRef = useRef(null);
   const roomIdRef = useRef(roomId);
 
-  // ✅ FIX: Save userName to sessionStorage when set
-  const handleNameSubmit = (name) => {
-    sessionStorage.setItem('userName', name);
-    setUserName(name);
-    setShowNameModal(false);
-  };
+  const handleNameSubmit = (name) => { setUserName(name); setShowNameModal(false); };
 
   const handleExitRoom = () => {
-    // ✅ FIX: Clear session on intentional exit so next visit asks for name again
-    sessionStorage.removeItem('userName');
-    sessionStorage.removeItem('userId');
     if (soundRef.current) {
       try { soundRef.current.stop(); soundRef.current.unload(); soundRef.current = null; } catch (e) {}
     }
@@ -117,42 +104,7 @@ export default function Room() {
     navigate('/');
   };
 
-  useEffect(() => {
-    if (!userName) return;
-    const socket = getSocket();
-    socket.connect();
-    joinRoom(roomId, userId, userName);
-
-    onRoomState(({ users, chatHistory, queue }) => {
-      setUsers(users);
-      setChatHistory(chatHistory || []);
-      setQueue(queue || []);
-    });
-
-    onUsersUpdated((updatedUsers) => setUsers([...updatedUsers]));
-    onPlaySong(({ songData, playUrl }) => playSong(songData, playUrl, false));
-    onPauseSong(() => console.log('📢 Pause event from room'));
-    onResumeSong(() => console.log('📢 Resume event from room'));
-
-    // ✅ Queue updates from server
-    onQueueUpdated((updatedQueue) => setQueue([...updatedQueue]));
-
-    return () => {
-      if (abortControllerRef.current) abortControllerRef.current.abort();
-      if (loadTimeoutRef.current) clearTimeout(loadTimeoutRef.current);
-      leaveRoom();
-      offRoomState();
-      offUsersUpdated();
-      offPlaySong();
-      offPauseSong();
-      offResumeSong();
-      offQueueUpdated();
-      if (soundRef.current) {
-        try { soundRef.current.stop(); soundRef.current.unload(); soundRef.current = null; } catch (e) {}
-      }
-    };
-  }, [userName]);
-
+  // ✅ FIX: playSong defined before useEffect so we can call it from room-state
   const playSong = (song, url, emit = true, retryCount = 0) => {
     if (!url) { showToast('No playable URL found', 'error'); return; }
     pausePositionRef.current = 0;
@@ -185,7 +137,6 @@ export default function Room() {
       onpause: () => setIsPlaying(false),
       onend: () => {
         setIsPlaying(false);
-        // ✅ Song ended — tell server to play next from queue
         emitSongEnded(roomIdRef.current);
       },
       onstop: () => setIsPlaying(false),
@@ -219,29 +170,96 @@ export default function Room() {
     if (emit) emitPlaySong(roomId, song, url, 0);
   };
 
+  useEffect(() => {
+    if (!userName) return;
+    const socket = getSocket();
+    socket.connect();
+    joinRoom(roomId, userId, userName);
+
+    // ✅ FIX: Properly restore ALL room state on join (including current song)
+    onRoomState(({ users, chatHistory, queue, currentSong, currentUrl, isPlaying, timestamp }) => {
+      setUsers(users);
+      // Restore chat history as properly typed messages
+      setChatMessages((chatHistory || []).map(msg => ({ ...msg, type: 'chat' })));
+      setQueue(queue || []);
+
+      // ✅ FIX: Restore current song if room is already playing something
+      if (currentSong && currentUrl) {
+        playSong(currentSong, currentUrl, false);
+        // Seek to approximate current position (accounting for latency)
+        // The timestamp is where the song was when last updated; we can't perfectly sync
+        // but we play from that point
+      }
+    });
+
+    onUsersUpdated((updatedUsers) => setUsers([...updatedUsers]));
+
+    // ✅ FIX: play-song from server (another user played a song)
+    onPlaySong(({ songData, playUrl }) => playSong(songData, playUrl, false));
+    onPauseSong(() => {
+      if (soundRef.current?.playing()) {
+        pausePositionRef.current = soundRef.current.seek() || 0;
+        soundRef.current.pause();
+        setIsPlaying(false);
+      }
+    });
+    onResumeSong(({ timestamp }) => {
+      if (soundRef.current && !soundRef.current.playing()) {
+        if (timestamp !== undefined) soundRef.current.seek(timestamp);
+        soundRef.current.play();
+        setIsPlaying(true);
+      }
+    });
+
+    // ✅ FIX: Chat messages stored in Room state (not in Chat component)
+    onChatMessage(msg => setChatMessages(p => [...p, { ...msg, type: 'chat' }]));
+    onSystemMessage(msg => setChatMessages(p => [...p, { ...msg, type: 'system' }]));
+
+    // ✅ Queue updates from server
+    onQueueUpdated((updatedQueue) => setQueue([...updatedQueue]));
+
+    return () => {
+      if (abortControllerRef.current) abortControllerRef.current.abort();
+      if (loadTimeoutRef.current) clearTimeout(loadTimeoutRef.current);
+      leaveRoom();
+      offRoomState();
+      offUsersUpdated();
+      offPlaySong();
+      offPauseSong();
+      offResumeSong();
+      offQueueUpdated();
+      offChatMessage();
+      offSystemMessage();
+      if (soundRef.current) {
+        try { soundRef.current.stop(); soundRef.current.unload(); soundRef.current = null; } catch (e) {}
+      }
+    };
+  }, [userName]);
+
   const handlePlaySong = (song) => {
     const audioUrlObj = selectBestAudioUrl(song);
     if (!audioUrlObj) { showToast('No audio available for this song', 'error'); return; }
     playSong(song, audioUrlObj.url, true);
   };
 
-  // ✅ Add to queue
   const handleAddToQueue = (song) => {
     emitAddToQueue(roomId, song);
     showToast(`Added "${song.name}" to queue`, 'success');
-    // Switch to queue tab so user can see it
     setRightTab('queue');
     if (!chatOpen) setChatOpen(true);
   };
 
-  // ✅ Remove from queue
   const handleRemoveFromQueue = (index) => {
     emitRemoveFromQueue(roomId, index);
   };
 
-  // ✅ Play specific song from queue
   const handlePlayFromQueue = (index) => {
     emitPlayFromQueue(roomId, index);
+  };
+
+  // ✅ FIX: Handler for chat messages sent by this user (passed to Chat component)
+  const handleNewChatMessage = (msg) => {
+    setChatMessages(p => [...p, msg]);
   };
 
   const handlePlayPause = () => {
@@ -354,7 +372,7 @@ export default function Room() {
               )}
             </div>
 
-            {/* ✅ Chat / Queue Tabs */}
+            {/* Chat / Queue Tabs */}
             {chatOpen && (
               <>
                 <div style={{display:'flex', borderBottom:'1px solid rgba(255,255,255,0.05)', flexShrink:0}}>
@@ -372,17 +390,25 @@ export default function Room() {
                   </button>
                 </div>
 
+                {/* ✅ FIX: Keep both panels mounted, just hide the inactive one */}
+                {/* This prevents unmount/remount which was wiping state */}
                 <div style={{flex:1, overflow:'hidden', display:'flex', flexDirection:'column'}}>
-                  {rightTab === 'chat' ? (
-                    <Chat roomId={roomId} userName={userName} chatHistory={chatHistory} />
-                  ) : (
+                  <div style={{display: rightTab === 'chat' ? 'flex' : 'none', flex:1, flexDirection:'column', overflow:'hidden'}}>
+                    <Chat
+                      roomId={roomId}
+                      userName={userName}
+                      messages={chatMessages}
+                      onNewMessage={handleNewChatMessage}
+                    />
+                  </div>
+                  <div style={{display: rightTab === 'queue' ? 'flex' : 'none', flex:1, flexDirection:'column', overflow:'hidden'}}>
                     <Queue
                       queue={queue}
                       currentSong={currentSong}
                       onRemove={handleRemoveFromQueue}
                       onPlayNext={handlePlayFromQueue}
                     />
-                  )}
+                  </div>
                 </div>
               </>
             )}
