@@ -99,7 +99,9 @@ export default function ForYouView() {
   const [seekHover,    setSeekHover]    = useState(false);
   const [replyOpen,    setReplyOpen]    = useState(false);
   const [replyText,    setReplyText]    = useState('');
+  const [replyFrom,    setReplyFrom]    = useState('');
   const [replySent,    setReplySent]    = useState(false);
+  const [replySaving,  setReplySaving]  = useState(false);
   const [replyShared,  setReplyShared]  = useState(false);
 
   const soundRef = useRef(null);
@@ -115,6 +117,17 @@ export default function ForYouView() {
       .then(d=>{ if(d.error) setError('Gift not found 💔'); else setGift(d); })
       .catch(()=>setError('Could not load gift'))
       .finally(()=>setLoading(false));
+  }, [giftId]);
+
+  // Poll every 8 seconds so sender sees reply when it arrives
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetch(`${BACKEND}/api/gift/${giftId}`)
+        .then(r=>r.json())
+        .then(d=>{ if (!d.error) setGift(d); })
+        .catch(()=>{});
+    }, 8000);
+    return () => clearInterval(interval);
   }, [giftId]);
 
   useEffect(() => () => {
@@ -494,11 +507,19 @@ export default function ForYouView() {
               onMouseLeave={e=>{e.currentTarget.style.transform='translateY(0)'; e.currentTarget.style.boxShadow=`0 4px 22px ${v.glow}55`;}}
             >🎵 Listen Together</button>
 
-            <button onClick={()=>setReplyOpen(true)}
-              style={{ padding:'12px 8px', borderRadius:'99px', border:`2px solid ${v.accent}66`, background:`${v.accent}14`, color:v.glow, fontSize:'11.5px', fontWeight:700, cursor:'pointer', fontFamily:'inherit', transition:'all 0.2s' }}
-              onMouseEnter={e=>{e.currentTarget.style.background=`${v.accent}28`; e.currentTarget.style.transform='translateY(-2px)';}}
-              onMouseLeave={e=>{e.currentTarget.style.background=`${v.accent}14`; e.currentTarget.style.transform='translateY(0)';}}
-            >✍️ Reply</button>
+            {gift?.reply ? (
+              /* ── Sender sees the reply ── */
+              <div style={{ padding:'12px 16px', borderRadius:'14px', background:`${v.accent}18`, border:`1.5px solid ${v.accent}44`, textAlign:'left' }}>
+                <p style={{ margin:'0 0 4px', fontSize:'10px', fontWeight:700, color:`${v.ink}66`, textTransform:'uppercase', letterSpacing:'0.1em' }}>💌 Reply from {gift.reply.from}</p>
+                <p style={{ margin:0, fontFamily:"'Caveat',cursive", fontSize:'17px', color:v.ink, lineHeight:1.5, fontStyle:'italic' }}>"{gift.reply.text}"</p>
+              </div>
+            ) : (
+              <button onClick={()=>setReplyOpen(true)}
+                style={{ padding:'12px 8px', borderRadius:'99px', border:`2px solid ${v.accent}66`, background:`${v.accent}14`, color:v.glow, fontSize:'11.5px', fontWeight:700, cursor:'pointer', fontFamily:'inherit', transition:'all 0.2s' }}
+                onMouseEnter={e=>{e.currentTarget.style.background=`${v.accent}28`; e.currentTarget.style.transform='translateY(-2px)';}}
+                onMouseLeave={e=>{e.currentTarget.style.background=`${v.accent}14`; e.currentTarget.style.transform='translateY(0)';}}
+              >✍️ Reply</button>
+            )}
 
             <button onClick={handleShare}
               style={{ padding:'12px 8px', borderRadius:'99px', border:`2px solid ${v.ruled}`, background:'rgba(0,0,0,0.04)', color:`${v.ink}88`, fontSize:'11.5px', fontWeight:600, cursor:'pointer', fontFamily:'inherit', transition:'all 0.2s' }}
@@ -552,6 +573,14 @@ export default function ForYouView() {
                   <span style={{ fontSize:'13px', color:`${v.ink}77`, fontStyle:'italic' }}>to <strong style={{color:v.ink}}>{gift.from}</strong></span>
                 </div>
 
+                <input
+                  type="text"
+                  placeholder="Your name (optional)"
+                  value={replyFrom}
+                  onChange={e=>setReplyFrom(e.target.value)}
+                  maxLength={30}
+                  style={{ width:'100%', padding:'12px 16px', borderRadius:'12px', border:`1.5px solid ${v.ruled}`, background:`${v.paperBg2}`, color:v.ink, fontSize:'13px', outline:'none', fontFamily:"'DM Sans',sans-serif", boxSizing:'border-box', marginBottom:'10px' }}
+                />
                 <textarea
                   autoFocus
                   value={replyText}
@@ -575,13 +604,26 @@ export default function ForYouView() {
                 <p style={{ color:`${v.ink}44`, fontSize:'10px', textAlign:'right', margin:'4px 0 16px' }}>{replyText.length}/300</p>
 
                 <div style={{ display:'flex', gap:'10px' }}>
-                  <button onClick={()=>{ setReplyOpen(false); setReplyText(''); }}
+                  <button onClick={()=>{ setReplyOpen(false); setReplyText(''); setReplyFrom(''); }}
                     style={{ flex:1, padding:'13px', borderRadius:'99px', border:`1.5px solid ${v.ruled}`, background:'transparent', color:`${v.ink}66`, fontSize:'13px', fontWeight:600, cursor:'pointer', fontFamily:'inherit' }}>
                     Cancel
                   </button>
                   <button
-                    disabled={!replyText.trim()}
-                    onClick={()=>{ if(replyText.trim()) setReplySent(true); }}
+                    disabled={!replyText.trim() || replySaving}
+                    onClick={async ()=>{
+                      if (!replyText.trim()) return;
+                      setReplySaving(true);
+                      try {
+                        const res = await fetch(`${BACKEND}/api/gift/${giftId}/reply`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ replyText: replyText.trim(), replyFrom: replyFrom.trim() || 'them' }),
+                        });
+                        if (res.ok) { setReplySent(true); setGift(g => ({...g, reply: {text: replyText.trim(), from: replyFrom.trim()||'them'}})); }
+                        else alert('Reply save fail aindi, try again!');
+                      } catch { alert('Network error, try again!'); }
+                      finally { setReplySaving(false); }
+                    }}
                     style={{
                       flex:2, padding:'13px', borderRadius:'99px', border:'none',
                       background: replyText.trim()?`linear-gradient(135deg,${v.accent},${v.glow})`:`${v.accent}22`,
@@ -592,7 +634,7 @@ export default function ForYouView() {
                       boxShadow: replyText.trim()?`0 6px 24px ${v.glow}44`:'none',
                       transition:'all 0.2s',
                     }}>
-                    ✨ Send Reply
+                    {replySaving ? '💌 Sending...' : '✨ Send Reply'}
                   </button>
                 </div>
               </>

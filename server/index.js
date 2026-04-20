@@ -66,6 +66,24 @@ app.get('/api/gift/:giftId', (req, res) => {
   if (!gift) return res.status(404).json({ error: 'Gift not found' });
   res.json(gift);
 });
+
+// Save reply to gift
+app.post('/api/gift/:giftId/reply', (req, res) => {
+  const gift = gifts.get(req.params.giftId);
+  if (!gift) return res.status(404).json({ error: 'Gift not found' });
+
+  const { replyText, replyFrom } = req.body;
+  if (!replyText || !replyText.trim()) return res.status(400).json({ error: 'Reply text required' });
+
+  gift.reply = {
+    text: replyText.trim(),
+    from: replyFrom || 'them',
+    repliedAt: Date.now(),
+  };
+
+  console.log(`💌 Reply saved for gift ${req.params.giftId}`);
+  res.json({ success: true });
+});
 ////////////////////////////////////////////////////////////
 // 🔥 AUDIO PROXY
 ////////////////////////////////////////////////////////////
