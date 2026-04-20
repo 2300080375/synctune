@@ -243,10 +243,47 @@ io.on('connection', (socket) => {
 // ─────────────────────────────────────────────────────────
 
 socket.on('reaction', ({ roomId, userName, emoji }) => {
-  // Broadcast to everyone else in the room (including sender
-  // so all clients get the same event — simpler logic)
   io.to(roomId).emit('reaction', { userName, emoji, id: Date.now() });
 });
+
+  // ── GIFT CHAT ──
+  // Join a gift's chat room (both sender & receiver share same giftId as room)
+  socket.on('gift-chat-join', ({ giftId, userName }) => {
+    const chatRoom = `gift-chat:${giftId}`;
+    socket.join(chatRoom);
+    // Store for cleanup on disconnect
+    if (!socket._giftChats) socket._giftChats = [];
+    socket._giftChats.push({ chatRoom, userName });
+
+    // Send existing chat history
+    const gift = gifts.get(giftId);
+    const history = gift?.chatHistory || [];
+    socket.emit('gift-chat-history', history);
+
+    // Notify others in this gift chat
+    socket.to(chatRoom).emit('gift-chat-system', { text: `${userName} joined the chat 👋` });
+    console.log(`💬 Gift chat join: ${giftId} — ${userName}`);
+  });
+
+  socket.on('gift-chat-message', ({ giftId, userName, text }) => {
+    if (!text?.trim()) return;
+    const chatRoom = `gift-chat:${giftId}`;
+    const msg = {
+      id: Date.now(),
+      from: userName,
+      text: text.trim(),
+      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    };
+    // Persist to gift's chat history (last 100 msgs)
+    const gift = gifts.get(giftId);
+    if (gift) {
+      if (!gift.chatHistory) gift.chatHistory = [];
+      gift.chatHistory.push(msg);
+      if (gift.chatHistory.length > 100) gift.chatHistory.shift();
+    }
+    io.to(chatRoom).emit('gift-chat-message', msg);
+    console.log(`💬 Gift chat [${giftId}] ${userName}: ${text.trim().slice(0,40)}`);
+  });
   console.log("🔌 Connected:", socket.id);
 
   socket.on('join-room', ({ roomId, userId, userName }) => {

@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Howl } from 'howler';
+import { io } from 'socket.io-client';
 
 const BACKEND = import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001';
 
@@ -97,16 +98,20 @@ export default function ForYouView() {
   const [progress,     setProgress]     = useState(0);
   const [duration,     setDuration]     = useState(0);
   const [seekHover,    setSeekHover]    = useState(false);
-  const [replyOpen,    setReplyOpen]    = useState(false);
-  const [replyText,    setReplyText]    = useState('');
-  const [replyFrom,    setReplyFrom]    = useState('');
-  const [replySent,    setReplySent]    = useState(false);
-  const [replySaving,  setReplySaving]  = useState(false);
-  const [replyShared,  setReplyShared]  = useState(false);
+  // ── Gift chat state ──
+  const [chatOpen,     setChatOpen]     = useState(false);
+  const [chatName,     setChatName]     = useState('');
+  const [chatJoined,   setChatJoined]   = useState(false);
+  const [chatInput,    setChatInput]    = useState('');
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatSocket,   setChatSocket]   = useState(null);
+  const [chatNameInput, setChatNameInput] = useState('');
 
-  const soundRef = useRef(null);
-  const progRef  = useRef(null);
-  const seekRef  = useRef(null);
+  const soundRef   = useRef(null);
+  const progRef    = useRef(null);
+  const seekRef    = useRef(null);
+  const chatEndRef = useRef(null);
+  const chatSockRef = useRef(null);
 
   const displayMsg = useTypewriter(gift?.message, revealed, 20);
   const v          = VIBES[gift?.vibe] || VIBES.dreamy;
@@ -132,7 +137,46 @@ export default function ForYouView() {
 
   useEffect(() => () => {
     soundRef.current?.stop(); soundRef.current?.unload(); clearInterval(progRef.current);
+    // cleanup gift chat socket
+    chatSockRef.current?.disconnect();
   }, []);
+
+  // Auto-scroll chat to bottom
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatMessages]);
+
+  // Join gift chat via socket
+  const joinGiftChat = useCallback((name) => {
+    const sock = io(BACKEND, { transports: ['websocket', 'polling'], autoConnect: true });
+    chatSockRef.current = sock;
+    setChatSocket(sock);
+
+    sock.on('connect', () => {
+      sock.emit('gift-chat-join', { giftId, userName: name });
+    });
+
+    sock.on('gift-chat-history', (history) => {
+      setChatMessages(history.map(m => ({ ...m, type: 'chat' })));
+    });
+
+    sock.on('gift-chat-message', (msg) => {
+      setChatMessages(prev => [...prev, { ...msg, type: 'chat' }]);
+    });
+
+    sock.on('gift-chat-system', (msg) => {
+      setChatMessages(prev => [...prev, { id: Date.now(), type: 'system', text: msg.text }]);
+    });
+
+    setChatName(name);
+    setChatJoined(true);
+  }, [giftId]);
+
+  const sendChatMessage = () => {
+    if (!chatInput.trim() || !chatSockRef.current) return;
+    chatSockRef.current.emit('gift-chat-message', { giftId, userName: chatName, text: chatInput.trim() });
+    setChatInput('');
+  };
 
   const startSound = () => {
     if (!gift?.song?.audioUrl || soundRef.current) return;
@@ -507,19 +551,11 @@ export default function ForYouView() {
               onMouseLeave={e=>{e.currentTarget.style.transform='translateY(0)'; e.currentTarget.style.boxShadow=`0 4px 22px ${v.glow}55`;}}
             >🎵 Listen Together</button>
 
-            {gift?.reply ? (
-              /* ── Sender sees the reply ── */
-              <div style={{ padding:'12px 16px', borderRadius:'14px', background:`${v.accent}18`, border:`1.5px solid ${v.accent}44`, textAlign:'left' }}>
-                <p style={{ margin:'0 0 4px', fontSize:'10px', fontWeight:700, color:`${v.ink}66`, textTransform:'uppercase', letterSpacing:'0.1em' }}>💌 Reply from {gift.reply.from}</p>
-                <p style={{ margin:0, fontFamily:"'Caveat',cursive", fontSize:'17px', color:v.ink, lineHeight:1.5, fontStyle:'italic' }}>"{gift.reply.text}"</p>
-              </div>
-            ) : (
-              <button onClick={()=>setReplyOpen(true)}
-                style={{ padding:'12px 8px', borderRadius:'99px', border:`2px solid ${v.accent}66`, background:`${v.accent}14`, color:v.glow, fontSize:'11.5px', fontWeight:700, cursor:'pointer', fontFamily:'inherit', transition:'all 0.2s' }}
-                onMouseEnter={e=>{e.currentTarget.style.background=`${v.accent}28`; e.currentTarget.style.transform='translateY(-2px)';}}
-                onMouseLeave={e=>{e.currentTarget.style.background=`${v.accent}14`; e.currentTarget.style.transform='translateY(0)';}}
-              >✍️ Reply</button>
-            )}
+            <button onClick={()=>setChatOpen(o=>!o)}
+              style={{ padding:'12px 8px', borderRadius:'99px', border:`2px solid ${v.accent}66`, background: chatOpen ? `${v.accent}28` : `${v.accent}14`, color:v.glow, fontSize:'11.5px', fontWeight:700, cursor:'pointer', fontFamily:'inherit', transition:'all 0.2s' }}
+              onMouseEnter={e=>{e.currentTarget.style.background=`${v.accent}28`; e.currentTarget.style.transform='translateY(-2px)';}}
+              onMouseLeave={e=>{e.currentTarget.style.background=chatOpen?`${v.accent}28`:`${v.accent}14`; e.currentTarget.style.transform='translateY(0)';}}
+            >{chatOpen ? '✕ Close' : '💬 Reply'}</button>
 
             <button onClick={handleShare}
               style={{ padding:'12px 8px', borderRadius:'99px', border:`2px solid ${v.ruled}`, background:'rgba(0,0,0,0.04)', color:`${v.ink}88`, fontSize:'11.5px', fontWeight:600, cursor:'pointer', fontFamily:'inherit', transition:'all 0.2s' }}
@@ -528,120 +564,107 @@ export default function ForYouView() {
             >🔗 Share</button>
           </div>
 
+          {/* ── Gift Chat Panel — slides open below card ── */}
+          <div style={{
+            maxHeight: chatOpen ? '420px' : '0px',
+            overflow: 'hidden',
+            transition: 'max-height 0.4s cubic-bezier(.22,1.2,.36,1)',
+          }}>
+            <div style={{
+              borderTop: `1.5px solid ${v.accent}33`,
+              background: `linear-gradient(160deg, ${v.paperBg} 0%, ${v.paperBg2} 100%)`,
+              padding: '0',
+              borderRadius: '0 0 24px 24px',
+            }}>
+              {!chatJoined ? (
+                /* ── Name entry before joining ── */
+                <div style={{ padding: '20px 20px 24px' }}>
+                  <p style={{ margin: '0 0 4px', fontSize: '13px', fontWeight: 700, color: v.ink }}>💬 Join the chat</p>
+                  <p style={{ margin: '0 0 14px', fontSize: '11px', color: `${v.ink}66` }}>Both you and {gift.from} can chat here using the same link</p>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <input
+                      autoFocus
+                      type="text"
+                      placeholder="Your name..."
+                      value={chatNameInput}
+                      onChange={e => setChatNameInput(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter' && chatNameInput.trim()) joinGiftChat(chatNameInput.trim()); }}
+                      maxLength={24}
+                      style={{ flex: 1, padding: '10px 14px', borderRadius: '10px', border: `1.5px solid ${v.accent}44`, background: 'rgba(255,255,255,0.7)', color: v.ink, fontSize: '14px', outline: 'none', fontFamily: 'inherit' }}
+                      onFocus={e=>{e.target.style.borderColor=v.accent; e.target.style.boxShadow=`0 0 0 3px ${v.accent}22`;}}
+                      onBlur={e=>{e.target.style.borderColor=`${v.accent}44`; e.target.style.boxShadow='none';}}
+                    />
+                    <button
+                      disabled={!chatNameInput.trim()}
+                      onClick={() => { if (chatNameInput.trim()) joinGiftChat(chatNameInput.trim()); }}
+                      style={{ padding: '10px 18px', borderRadius: '10px', border: 'none', background: chatNameInput.trim() ? `linear-gradient(135deg,${v.accent},${v.glow})` : `${v.accent}22`, color: chatNameInput.trim() ? 'white' : `${v.ink}44`, fontWeight: 700, fontSize: '13px', cursor: chatNameInput.trim() ? 'pointer' : 'not-allowed', fontFamily: 'inherit', flexShrink: 0, transition: 'all 0.2s' }}
+                    >Join →</button>
+                  </div>
+                </div>
+              ) : (
+                /* ── Live chat ── */
+                <>
+                  {/* Messages list */}
+                  <div style={{ height: '240px', overflowY: 'auto', padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {chatMessages.length === 0 && (
+                      <div style={{ textAlign: 'center', color: `${v.ink}44`, fontSize: '12px', marginTop: '80px' }}>
+                        Say hi! 👋
+                      </div>
+                    )}
+                    {chatMessages.map((msg, i) => (
+                      msg.type === 'system' ? (
+                        <div key={msg.id || i} style={{ textAlign: 'center', fontSize: '11px', color: `${v.ink}44`, padding: '2px 0' }}>{msg.text}</div>
+                      ) : (
+                        <div key={msg.id || i} style={{ display: 'flex', flexDirection: 'column', alignItems: msg.from === chatName ? 'flex-end' : 'flex-start' }}>
+                          <span style={{ fontSize: '10px', color: `${v.ink}55`, marginBottom: '2px', paddingLeft: '6px', paddingRight: '6px' }}>{msg.from} · {msg.time}</span>
+                          <div style={{
+                            maxWidth: '78%',
+                            padding: '8px 13px',
+                            borderRadius: msg.from === chatName ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
+                            background: msg.from === chatName ? `linear-gradient(135deg,${v.accent},${v.glow})` : 'rgba(255,255,255,0.65)',
+                            color: msg.from === chatName ? 'white' : v.ink,
+                            fontSize: '13.5px',
+                            fontFamily: "'DM Sans',sans-serif",
+                            wordBreak: 'break-word',
+                            lineHeight: 1.5,
+                            boxShadow: msg.from === chatName ? `0 2px 12px ${v.glow}33` : '0 1px 4px rgba(0,0,0,0.08)',
+                          }}>
+                            {msg.text}
+                          </div>
+                        </div>
+                      )
+                    ))}
+                    <div ref={chatEndRef} />
+                  </div>
+
+                  {/* Input bar */}
+                  <div style={{ borderTop: `1px solid ${v.ruled}`, padding: '10px 12px 16px', display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <input
+                      type="text"
+                      placeholder="Type a message..."
+                      value={chatInput}
+                      onChange={e => setChatInput(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') sendChatMessage(); }}
+                      maxLength={300}
+                      style={{ flex: 1, padding: '9px 14px', borderRadius: '99px', border: `1.5px solid ${v.accent}33`, background: 'rgba(255,255,255,0.7)', color: v.ink, fontSize: '13px', outline: 'none', fontFamily: 'inherit', transition: 'border-color 0.2s' }}
+                      onFocus={e=>{e.target.style.borderColor=v.accent;}}
+                      onBlur={e=>{e.target.style.borderColor=`${v.accent}33`;}}
+                    />
+                    <button
+                      onClick={sendChatMessage}
+                      disabled={!chatInput.trim()}
+                      style={{ width: '36px', height: '36px', borderRadius: '50%', border: 'none', background: chatInput.trim() ? `linear-gradient(135deg,${v.accent},${v.glow})` : `${v.accent}22`, color: chatInput.trim() ? 'white' : `${v.ink}44`, cursor: chatInput.trim() ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, transition: 'all 0.2s', boxShadow: chatInput.trim() ? `0 2px 12px ${v.glow}44` : 'none' }}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+
         </div>{/* end card inner */}
       </div>{/* end postcard wrapper */}
-
-      {/* ════════════════════════
-          REPLY BOTTOM SHEET
-      ════════════════════════ */}
-      {replyOpen && (
-        <div
-          style={{ position:'fixed', inset:0, zIndex:50, background:'rgba(0,0,0,0.65)', backdropFilter:'blur(14px)', display:'flex', alignItems:'flex-end', justifyContent:'center', animation:'fadeIn 0.2s ease' }}
-          onClick={e=>{ if(e.target===e.currentTarget){ setReplyOpen(false); setReplySent(false); setReplyText(''); } }}
-        >
-          <div style={{ background:`linear-gradient(160deg,${v.paperBg},${v.paperBg2})`, borderRadius:'28px 28px 0 0', padding:'12px 24px 44px', width:'100%', maxWidth:'540px', boxShadow:`0 -2px 0 ${v.accent}55, 0 -16px 60px rgba(0,0,0,0.5)`, animation:'slideUp 0.38s cubic-bezier(.22,1.2,.36,1)' }}>
-
-            <div style={{ width:'36px', height:'4px', borderRadius:'99px', background:`${v.accent}55`, margin:'0 auto 24px' }} />
-
-            {replySent ? (
-              <div style={{ textAlign:'center', paddingBottom:'8px' }}>
-                <div style={{ fontSize:'60px', marginBottom:'16px', filter:`drop-shadow(0 0 20px ${v.accent})` }}>💌</div>
-                <h3 style={{ fontFamily:"'Syne',sans-serif", fontWeight:900, fontSize:'24px', color:v.ink, margin:'0 0 10px' }}>Reply Ready!</h3>
-                <div style={{ background:`${v.accent}18`, border:`1.5px solid ${v.accent}44`, borderRadius:'16px', padding:'16px 20px', margin:'0 0 24px' }}>
-                  <p style={{ fontFamily:"'Caveat',cursive", fontSize:'20px', color:v.ink, margin:0, lineHeight:1.5, fontStyle:'italic' }}>"{replyText}"</p>
-                </div>
-                <button
-                  onClick={async()=>{
-                    const txt=`💌 Reply to ${gift.from}'s gift:\n"${replyText}"\n\nSee the original: ${window.location.href}`;
-                    try {
-                      if(navigator.share) await navigator.share({title:`Reply to ${gift.from} 💌`,text:txt,url:window.location.href});
-                      else { await navigator.clipboard.writeText(txt); setReplyShared(true); setTimeout(()=>setReplyShared(false),2500); }
-                    } catch {}
-                  }}
-                  style={{ width:'100%', padding:'16px', borderRadius:'99px', border:'none', background:`linear-gradient(135deg,${v.accent},${v.glow})`, color:'white', fontWeight:800, fontSize:'15px', cursor:'pointer', fontFamily:'inherit', marginBottom:'10px', boxShadow:`0 6px 28px ${v.glow}55`, letterSpacing:'0.02em' }}>
-                  {replyShared ? '✓ Copied to clipboard!' : '📤 Share My Reply'}
-                </button>
-                <button onClick={()=>{ setReplyOpen(false); setReplySent(false); setReplyText(''); }}
-                  style={{ width:'100%', padding:'13px', borderRadius:'99px', border:`1.5px solid ${v.ruled}`, background:'transparent', color:`${v.ink}66`, fontSize:'13px', fontWeight:600, cursor:'pointer', fontFamily:'inherit' }}>
-                  Close
-                </button>
-              </div>
-            ) : (
-              <>
-                <div style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'18px' }}>
-                  <span style={{ background:`linear-gradient(135deg,${v.accent},${v.glow})`, color:'white', fontFamily:"'Syne',sans-serif", fontWeight:800, fontSize:'10px', padding:'4px 10px', borderRadius:'6px', letterSpacing:'0.08em', textTransform:'uppercase' }}>✍️ Reply</span>
-                  <span style={{ fontSize:'13px', color:`${v.ink}77`, fontStyle:'italic' }}>to <strong style={{color:v.ink}}>{gift.from}</strong></span>
-                </div>
-
-                <input
-                  type="text"
-                  placeholder="Your name (optional)"
-                  value={replyFrom}
-                  onChange={e=>setReplyFrom(e.target.value)}
-                  maxLength={30}
-                  style={{ width:'100%', padding:'12px 16px', borderRadius:'12px', border:`1.5px solid ${v.ruled}`, background:`${v.paperBg2}`, color:v.ink, fontSize:'13px', outline:'none', fontFamily:"'DM Sans',sans-serif", boxSizing:'border-box', marginBottom:'10px' }}
-                />
-                <textarea
-                  autoFocus
-                  value={replyText}
-                  onChange={e=>setReplyText(e.target.value)}
-                  placeholder={`Write back to ${gift.from}... ✨`}
-                  maxLength={300} rows={5}
-                  style={{
-                    width:'100%', padding:'14px 16px', boxSizing:'border-box',
-                    background:'rgba(255,255,255,0.75)',
-                    border:`2px solid ${v.accent}44`, borderRadius:'16px',
-                    color:v.ink, fontSize:'18px',
-                    fontFamily:"'Caveat','Georgia',cursive",
-                    resize:'none', outline:'none', lineHeight:'30px',
-                    backgroundImage:`repeating-linear-gradient(transparent,transparent 29px,${v.ruled} 29px,${v.ruled} 30px)`,
-                    backgroundPosition:'0 11px',
-                    transition:'border-color 0.2s, box-shadow 0.2s',
-                  }}
-                  onFocus={e=>{e.target.style.borderColor=v.accent; e.target.style.boxShadow=`0 0 0 4px ${v.accent}22`;}}
-                  onBlur={e=>{e.target.style.borderColor=`${v.accent}44`; e.target.style.boxShadow='none';}}
-                />
-                <p style={{ color:`${v.ink}44`, fontSize:'10px', textAlign:'right', margin:'4px 0 16px' }}>{replyText.length}/300</p>
-
-                <div style={{ display:'flex', gap:'10px' }}>
-                  <button onClick={()=>{ setReplyOpen(false); setReplyText(''); setReplyFrom(''); }}
-                    style={{ flex:1, padding:'13px', borderRadius:'99px', border:`1.5px solid ${v.ruled}`, background:'transparent', color:`${v.ink}66`, fontSize:'13px', fontWeight:600, cursor:'pointer', fontFamily:'inherit' }}>
-                    Cancel
-                  </button>
-                  <button
-                    disabled={!replyText.trim() || replySaving}
-                    onClick={async ()=>{
-                      if (!replyText.trim()) return;
-                      setReplySaving(true);
-                      try {
-                        const res = await fetch(`${BACKEND}/api/gift/${giftId}/reply`, {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ replyText: replyText.trim(), replyFrom: replyFrom.trim() || 'them' }),
-                        });
-                        if (res.ok) { setReplySent(true); setGift(g => ({...g, reply: {text: replyText.trim(), from: replyFrom.trim()||'them'}})); }
-                        else alert('Reply save fail aindi, try again!');
-                      } catch { alert('Network error, try again!'); }
-                      finally { setReplySaving(false); }
-                    }}
-                    style={{
-                      flex:2, padding:'13px', borderRadius:'99px', border:'none',
-                      background: replyText.trim()?`linear-gradient(135deg,${v.accent},${v.glow})`:`${v.accent}22`,
-                      color: replyText.trim()?'white':`${v.ink}44`,
-                      fontWeight:800, fontSize:'14px',
-                      cursor: replyText.trim()?'pointer':'not-allowed',
-                      fontFamily:'inherit', letterSpacing:'0.02em',
-                      boxShadow: replyText.trim()?`0 6px 24px ${v.glow}44`:'none',
-                      transition:'all 0.2s',
-                    }}>
-                    {replySaving ? '💌 Sending...' : '✨ Send Reply'}
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      )}
 
     </div>
   );
