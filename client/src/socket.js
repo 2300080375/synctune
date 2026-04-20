@@ -95,3 +95,16 @@ export const offSeekSong = () => off('seek-song');
 export const offResumeSong = () => off('resume-song');
 export const offChatMessage = () => off('chat-message');
 export const offSystemMessage = () => off('system-message');
+// ─────────────────────────────────────────────────────────
+// ADD THESE to your existing client/src/socket.js
+// Paste at the bottom of the file
+// ─────────────────────────────────────────────────────────
+
+// Emit a reaction to everyone in the room
+export const emitReaction = (roomId, userName, emoji) => {
+  socket?.emit('reaction', { roomId, userName, emoji });
+};
+
+// Listen for reactions broadcast from server
+export const onReaction = (cb) => on('reaction', cb);
+export const offReaction = () => off('reaction');

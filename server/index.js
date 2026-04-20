@@ -236,6 +236,17 @@ const socketToUser = new Map();
 const roomPlayTimestamps = new Map(); // roomId -> { startedAt, timestamp }
 
 io.on('connection', (socket) => {
+  // ─────────────────────────────────────────────────────────
+// ADD THIS inside your io.on('connection', (socket) => { ... })
+// block in server/index.js  — paste it next to your other
+// socket.on(...) handlers e.g. after 'chat-message'
+// ─────────────────────────────────────────────────────────
+
+socket.on('reaction', ({ roomId, userName, emoji }) => {
+  // Broadcast to everyone else in the room (including sender
+  // so all clients get the same event — simpler logic)
+  io.to(roomId).emit('reaction', { userName, emoji, id: Date.now() });
+});
   console.log("🔌 Connected:", socket.id);
 
   socket.on('join-room', ({ roomId, userId, userName }) => {
