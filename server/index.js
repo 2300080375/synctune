@@ -214,18 +214,44 @@ app.get('/api/search', async (req, res) => {
   const { query } = req.query;
   if (!query) return res.status(400).json({ error: 'Query required' });
   console.log("🔍 Search:", query);
-  for (const mirror of SAAVN_MIRRORS) {
-    try {
-      const data = await fetchFromMirror(mirror, query);
-      console.log("✅ Mirror success:", mirror);
-      return res.json(data);
-    } catch (err) {
-      console.log("❌ Mirror failed:", mirror);
-    }
-  }
-  res.status(500).json({ error: 'All mirrors failed' });
-});
 
+  const path = `/api/search/songs?query=${encodeURIComponent(query)}&limit=20&page=1`;
+  
+  const request = https.get({
+    hostname: 'saavn.sumit.co',
+    path,
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
+      'Accept': 'application/json',
+      'Accept-Language': 'en-IN,en;q=0.9',
+      'Referer': 'https://www.jiosaavn.com/',
+      'Origin': 'https://www.jiosaavn.com',
+    },
+    timeout: 10000
+  }, (apiRes) => {
+    let data = '';
+    apiRes.on('data', chunk => data += chunk);
+    apiRes.on('end', () => {
+      try {
+        const parsed = JSON.parse(data);
+        console.log("✅ Search response shape:", JSON.stringify(parsed).slice(0, 200));
+        res.json(parsed);
+      } catch {
+        res.status(500).json({ error: 'Invalid response from JioSaavn' });
+      }
+    });
+  });
+
+  request.on('error', (err) => {
+    console.error("❌ Search error:", err.message);
+    res.status(500).json({ error: 'Search failed: ' + err.message });
+  });
+
+  request.on('timeout', () => {
+    request.destroy();
+    res.status(504).json({ error: 'Search timeout' });
+  });
+});
 ////////////////////////////////////////////////////////////
 // 🔌 SOCKET.IO
 ////////////////////////////////////////////////////////////
