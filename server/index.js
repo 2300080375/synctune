@@ -446,13 +446,14 @@ io.on('connection', (socket) => {
   });
 
   socket.on('pause-song', ({ roomId, timestamp }) => {
-    const room = roomManager.getRoom(roomId);
-    if (room) {
-      roomManager.updateSongState(roomId, room.currentSong, room.currentUrl, timestamp, false);
-      roomPlayTimestamps.delete(roomId);
-      io.to(roomId).emit('pause-song', { timestamp });
-    }
-  });
+  const room = roomManager.getRoom(roomId);
+  if (room) {
+    roomManager.updateSongState(roomId, room.currentSong, room.currentUrl, timestamp, false);
+    roomPlayTimestamps.delete(roomId);
+    // ✅ socket.to() — sender ki emit avvatledu!
+    socket.to(roomId).emit('pause-song', { timestamp });
+  }
+});
 
   socket.on('seek-song', ({ roomId, timestamp }) => {
     const room = roomManager.getRoom(roomId);
@@ -464,13 +465,14 @@ io.on('connection', (socket) => {
   });
 
   socket.on('resume-song', ({ roomId, timestamp }) => {
-    const room = roomManager.getRoom(roomId);
-    if (room) {
-      roomManager.updateSongState(roomId, room.currentSong, room.currentUrl, timestamp, true);
-      roomPlayTimestamps.set(roomId, { startedAt: Date.now(), timestamp });
-      io.to(roomId).emit('resume-song', { timestamp });
-    }
-  });
+  const room = roomManager.getRoom(roomId);
+  if (room) {
+    roomManager.updateSongState(roomId, room.currentSong, room.currentUrl, timestamp, true);
+    roomPlayTimestamps.set(roomId, { startedAt: Date.now(), timestamp });
+    // ✅ socket.to() — sender ki emit avvatledu!
+    socket.to(roomId).emit('resume-song', { timestamp });
+  }
+});
 
   socket.on('chat-message', ({ roomId, user, text, time, msgType = 'text', stickerId, gifUrl, gifTitle, uploadData, uploadName }) => {
     const message = { user, text, time, msgType, stickerId, gifUrl, gifTitle, uploadData, uploadName };
