@@ -3,6 +3,7 @@ const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const https = require('https');
+const crypto = require('crypto');
 const roomManager = require('./roomManager');
 
 const app = express();
@@ -16,20 +17,51 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
 const PORT = 3001;
-// ✅ ADD THIS to server/index.js — paste after app.use(express.json()) line
-// Gift storage (in-memory — gifts survive until server restart)
 
-const gifts = new Map(); // giftId -> gift data
+const gifts = new Map();
 
 function generateGiftId() {
   return Math.random().toString(36).substring(2, 9).toUpperCase();
 }
 
 ////////////////////////////////////////////////////////////
+// 🔓 DECRYPT JIOSAAVN AUDIO URL
+////////////////////////////////////////////////////////////
+
+function decryptUrl(encryptedUrl) {
+  try {
+    if (!encryptedUrl) return null;
+    const key = '38346591';
+    const iv = Buffer.alloc(8, 0);
+    const decipher = crypto.createDecipheriv('des', Buffer.from(key), iv);
+    decipher.setAutoPadding(false);
+    const decoded = Buffer.from(encryptedUrl, 'base64');
+    let decrypted = decipher.update(decoded);
+    decrypted = Buffer.concat([decrypted, decipher.final()]);
+    let url = decrypted.toString('utf8').replace(/\x00+$/, '').trim();
+
+    // Fix protocol
+    url = url.replace(/^http:/, 'https:');
+
+    // Replace quality precisely — only in filename
+    url = url
+      .replace(/_96\.mp4/g, '_320.mp4')
+      .replace(/_96\.mp3/g, '_320.mp3')
+      .replace(/&q=1&/g, '&q=4&')
+      .replace(/\?q=1&/g, '?q=4&');
+
+    console.log('🔓 Decrypted URL:', url.substring(0, 120));
+    return url || null;
+  } catch(e) {
+    console.log('❌ Decrypt failed:', e.message);
+    return null;
+  }
+}
+
+////////////////////////////////////////////////////////////
 // 🎁 GIFT API
 ////////////////////////////////////////////////////////////
 
-// Create gift
 app.post('/api/gift/create', (req, res) => {
   const { photo, song, message, from, vibe } = req.body;
 
@@ -51,7 +83,6 @@ app.post('/api/gift/create', (req, res) => {
   gifts.set(giftId, gift);
   console.log(`🎁 Gift created: ${giftId} from ${from}`);
 
-  // Auto delete after 7 days
   setTimeout(() => {
     gifts.delete(giftId);
     console.log(`🗑️ Gift expired: ${giftId}`);
@@ -60,14 +91,12 @@ app.post('/api/gift/create', (req, res) => {
   res.json({ giftId });
 });
 
-// Get gift
 app.get('/api/gift/:giftId', (req, res) => {
   const gift = gifts.get(req.params.giftId);
   if (!gift) return res.status(404).json({ error: 'Gift not found' });
   res.json(gift);
 });
 
-// Save reply to gift
 app.post('/api/gift/:giftId/reply', (req, res) => {
   const gift = gifts.get(req.params.giftId);
   if (!gift) return res.status(404).json({ error: 'Gift not found' });
@@ -84,6 +113,7 @@ app.post('/api/gift/:giftId/reply', (req, res) => {
   console.log(`💌 Reply saved for gift ${req.params.giftId}`);
   res.json({ success: true });
 });
+
 ////////////////////////////////////////////////////////////
 // 🔥 AUDIO PROXY
 ////////////////////////////////////////////////////////////
@@ -139,7 +169,7 @@ app.get('/api/audio', (req, res) => {
 });
 
 ////////////////////////////////////////////////////////////
-// 🎞 TENOR GIF PROXY  (avoids CORS on mobile browsers)
+// 🎞 TENOR GIF PROXY
 ////////////////////////////////////////////////////////////
 
 const TENOR_KEY = 'AIzaSyAyimkuYQYF_FXVALexPmasa5gSpV4bJj8';
@@ -210,22 +240,68 @@ function fetchFromMirror(mirror, query) {
   });
 }
 
+// ✅ REPLACE the entire app.get('/api/search') handler in server/index.js with this:
+
 app.get('/api/search', async (req, res) => {
   const { query } = req.query;
   if (!query) return res.status(400).json({ error: 'Query required' });
   console.log("🔍 Search:", query);
 
-  const path = `/api/search/songs?query=${encodeURIComponent(query)}&limit=20&page=1`;
-  
+  // Try mirrors first (they return already-processed data with downloadUrl)
+  const MIRRORS = [
+    'saavn.sumit.co',
+    'jiosaavn-api-privatecvc2.vercel.app',
+    'saavnapi-nine.vercel.app',
+  ];
+
+  for (const mirror of MIRRORS) {
+    try {
+      const data = await new Promise((resolve, reject) => {
+        const path = `/api/search/songs?query=${encodeURIComponent(query)}&limit=20`;
+        const req2 = https.request({
+          hostname: mirror, path, method: 'GET',
+          headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' },
+          timeout: 8000,
+        }, (r) => {
+          if (r.statusCode !== 200) return reject(new Error(`${r.statusCode}`));
+          let d = '';
+          r.on('data', c => d += c);
+          r.on('end', () => { try { resolve(JSON.parse(d)); } catch { reject(new Error('JSON')); } });
+        });
+        req2.on('error', reject);
+        req2.on('timeout', () => { req2.destroy(); reject(new Error('timeout')); });
+        req2.end();
+      });
+
+      const results = (data?.data?.results || []).map(s => ({
+        id: s.id,
+        name: s.name || s.title || 'Unknown',
+        primaryArtists: s.artists?.primary?.map(a => a.name).join(', ') || s.primaryArtists || '',
+        duration: s.duration || 0,
+        image: s.image || [],
+        downloadUrl: s.downloadUrl || [],
+      }));
+
+      if (results.length > 0) {
+        console.log(`✅ Mirror success: ${mirror} — ${results.length} results`);
+        return res.json({ data: { results } });
+      }
+    } catch (err) {
+      console.log(`❌ Mirror failed: ${mirror} — ${err.message}`);
+    }
+  }
+
+  // Fallback: direct JioSaavn API with decrypt
+  console.log("⚠️ All mirrors failed, trying direct JioSaavn...");
+  const path = `/api.php?__call=search.getResults&_format=json&_marker=0&api_version=4&ctx=web6dot0&q=${encodeURIComponent(query)}&n=20&p=1`;
+
   const request = https.get({
-    hostname: 'saavn.sumit.co',
+    hostname: 'www.jiosaavn.com',
     path,
     headers: {
       'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
-      'Accept': 'application/json',
-      'Accept-Language': 'en-IN,en;q=0.9',
+      'Accept': 'application/json, text/plain, */*',
       'Referer': 'https://www.jiosaavn.com/',
-      'Origin': 'https://www.jiosaavn.com',
     },
     timeout: 10000
   }, (apiRes) => {
@@ -234,22 +310,55 @@ app.get('/api/search', async (req, res) => {
     apiRes.on('end', () => {
       try {
         const parsed = JSON.parse(data);
-        console.log("✅ Search response shape:", JSON.stringify(parsed).slice(0, 200));
-        res.json(parsed);
-      } catch {
-        res.status(500).json({ error: 'Invalid response from JioSaavn' });
+        const raw = parsed?.results || parsed?.data?.results || [];
+
+        const results = raw.map(s => {
+          const primaryArtists =
+            s.more_info?.singers ||
+            s.more_info?.primary_artists ||
+            s.primary_artists ||
+            s.singers ||
+            (s.more_info?.artistMap?.primary_artists?.map(a => a.name).join(', ')) ||
+            '';
+
+          const encUrl =
+            s.more_info?.encrypted_media_url ||
+            s.more_info?.encrypted_cache_url ||
+            s.encrypted_media_url || '';
+          const audioUrl = decryptUrl(encUrl);
+
+          console.log(`🎤 "${s.title}" | artists: "${primaryArtists}" | audio: ${audioUrl ? '✅' : '❌'}`);
+
+          return {
+            id: s.id,
+            name: s.title || s.song || 'Unknown',
+            primaryArtists,
+            duration: parseInt(s.duration) || 0,
+            image: s.image ? [
+              { url: s.image.replace('150x150', '50x50') },
+              { url: s.image },
+              { url: s.image.replace('150x150', '500x500') },
+            ] : [],
+            downloadUrl: audioUrl ? [{ quality: '320kbps', url: audioUrl }] : [],
+          };
+        }).filter(s => s.downloadUrl.length > 0); // only return songs with audio
+
+        console.log(`✅ Direct JioSaavn: ${results.length} results with audio`);
+        return res.json({ data: { results } });
+      } catch(e) {
+        console.log("❌ Parse error:", e.message);
+        res.status(500).json({ error: 'Search failed' });
       }
     });
   });
 
-  request.on('error', (err) => {
+  request.on('error', err => {
     console.error("❌ Search error:", err.message);
-    res.status(500).json({ error: 'Search failed: ' + err.message });
+    res.status(500).json({ error: 'Search failed' });
   });
-
   request.on('timeout', () => {
     request.destroy();
-    res.status(504).json({ error: 'Search timeout' });
+    res.status(504).json({ error: 'Timeout' });
   });
 });
 ////////////////////////////////////////////////////////////
@@ -257,36 +366,25 @@ app.get('/api/search', async (req, res) => {
 ////////////////////////////////////////////////////////////
 
 const socketToUser = new Map();
-
-// ✅ Track song play timestamps for accurate sync
-const roomPlayTimestamps = new Map(); // roomId -> { startedAt, timestamp }
+const roomPlayTimestamps = new Map();
 
 io.on('connection', (socket) => {
-  // ─────────────────────────────────────────────────────────
-// ADD THIS inside your io.on('connection', (socket) => { ... })
-// block in server/index.js  — paste it next to your other
-// socket.on(...) handlers e.g. after 'chat-message'
-// ─────────────────────────────────────────────────────────
+  console.log("🔌 Connected:", socket.id);
 
-socket.on('reaction', ({ roomId, userName, emoji }) => {
-  io.to(roomId).emit('reaction', { userName, emoji, id: Date.now() });
-});
+  socket.on('reaction', ({ roomId, userName, emoji }) => {
+    io.to(roomId).emit('reaction', { userName, emoji, id: Date.now() });
+  });
 
-  // ── GIFT CHAT ──
-  // Join a gift's chat room (both sender & receiver share same giftId as room)
   socket.on('gift-chat-join', ({ giftId, userName }) => {
     const chatRoom = `gift-chat:${giftId}`;
     socket.join(chatRoom);
-    // Store for cleanup on disconnect
     if (!socket._giftChats) socket._giftChats = [];
     socket._giftChats.push({ chatRoom, userName });
 
-    // Send existing chat history
     const gift = gifts.get(giftId);
     const history = gift?.chatHistory || [];
     socket.emit('gift-chat-history', history);
 
-    // Notify others in this gift chat
     socket.to(chatRoom).emit('gift-chat-system', { text: `${userName} joined the chat 👋` });
     console.log(`💬 Gift chat join: ${giftId} — ${userName}`);
   });
@@ -300,7 +398,6 @@ socket.on('reaction', ({ roomId, userName, emoji }) => {
       text: text.trim(),
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
-    // Persist to gift's chat history (last 100 msgs)
     const gift = gifts.get(giftId);
     if (gift) {
       if (!gift.chatHistory) gift.chatHistory = [];
@@ -310,7 +407,6 @@ socket.on('reaction', ({ roomId, userName, emoji }) => {
     io.to(chatRoom).emit('gift-chat-message', msg);
     console.log(`💬 Gift chat [${giftId}] ${userName}: ${text.trim().slice(0,40)}`);
   });
-  console.log("🔌 Connected:", socket.id);
 
   socket.on('join-room', ({ roomId, userId, userName }) => {
     if (!roomManager.roomExists(roomId)) roomManager.createRoom(roomId);
@@ -319,7 +415,6 @@ socket.on('reaction', ({ roomId, userName, emoji }) => {
     socketToUser.set(socket.id, { roomId, userId, userName });
     socket.join(roomId);
 
-    // ✅ Calculate accurate current timestamp for new joiner
     let accurateTimestamp = room.timestamp || 0;
     if (room.isPlaying && roomPlayTimestamps.has(roomId)) {
       const { startedAt, timestamp } = roomPlayTimestamps.get(roomId);
@@ -339,7 +434,6 @@ socket.on('reaction', ({ roomId, userName, emoji }) => {
 
     io.to(roomId).emit('users-updated', room.users);
 
-    // ✅ Join notification in chat
     if (room.users.length > 1) {
       io.to(roomId).emit('system-message', { text: `${userName} joined the room 👋` });
     }
@@ -347,7 +441,6 @@ socket.on('reaction', ({ roomId, userName, emoji }) => {
 
   socket.on('play-song', ({ roomId, songData, playUrl, timestamp }) => {
     roomManager.updateSongState(roomId, songData, playUrl, timestamp, true);
-    // ✅ Track when song started for sync
     roomPlayTimestamps.set(roomId, { startedAt: Date.now(), timestamp: timestamp || 0 });
     io.to(roomId).emit('play-song', { songData, playUrl, timestamp });
   });
@@ -379,7 +472,6 @@ socket.on('reaction', ({ roomId, userName, emoji }) => {
     }
   });
 
-  // ✅ CHAT
   socket.on('chat-message', ({ roomId, user, text, time, msgType = 'text', stickerId, gifUrl, gifTitle, uploadData, uploadName }) => {
     const message = { user, text, time, msgType, stickerId, gifUrl, gifTitle, uploadData, uploadName };
     roomManager.addChatMessage(roomId, message);
@@ -388,20 +480,17 @@ socket.on('reaction', ({ roomId, userName, emoji }) => {
     console.log(`💬 Chat [${roomId}] ${user}: ${isUpload ? `[${msgType} - ${uploadName || 'file'}]` : text}`);
   });
 
-  // ✅ QUEUE — Add
   socket.on('add-to-queue', ({ roomId, song }) => {
     roomManager.addToQueue(roomId, song);
     io.to(roomId).emit('queue-updated', roomManager.getQueue(roomId));
     console.log(`🎵 Queue add [${roomId}]:`, song.name);
   });
 
-  // ✅ QUEUE — Remove
   socket.on('remove-from-queue', ({ roomId, index }) => {
     roomManager.removeFromQueue(roomId, index);
     io.to(roomId).emit('queue-updated', roomManager.getQueue(roomId));
   });
 
-  // ✅ QUEUE — Play specific
   socket.on('play-from-queue', ({ roomId, index }) => {
     const song = roomManager.playFromQueue(roomId, index);
     if (song) {
@@ -417,7 +506,6 @@ socket.on('reaction', ({ roomId, userName, emoji }) => {
     }
   });
 
-  // ✅ QUEUE — Auto next on song end
   socket.on('song-ended', ({ roomId }) => {
     const nextSong = roomManager.playNextFromQueue(roomId);
     if (nextSong) {
@@ -441,7 +529,6 @@ socket.on('reaction', ({ roomId, userName, emoji }) => {
       const room = roomManager.leaveRoom(roomId, userInfo.userId);
       if (room) {
         io.to(roomId).emit('users-updated', room.users);
-        // ✅ Leave notification in chat
         io.to(roomId).emit('system-message', { text: `${userName} left the room` });
       }
       socketToUser.delete(socket.id);
