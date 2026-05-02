@@ -47,12 +47,12 @@ function UsernameModal({ onSubmit }) {
           <input
             type="text" autoFocus placeholder="Enter your name"
             value={name} onChange={e => setName(e.target.value)} maxLength={24}
-            style={{ padding: '13px 16px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '12px', color: '#f1f0ff', fontSize: '15px', outline: 'none', fontFamily: 'inherit', transition: 'border-color 0.2s' }}
+            style={{ padding: '13px 16px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '12px', color: '#f1f0ff', fontSize: '15px', outline: 'none', fontFamily: 'inherit' }}
             onFocus={e => e.target.style.borderColor = 'rgba(167,139,250,0.5)'}
             onBlur={e => e.target.style.borderColor = 'rgba(255,255,255,0.08)'}
           />
           <button type="submit" disabled={!name.trim()}
-            style={{ padding: '13px', borderRadius: '12px', border: 'none', background: name.trim() ? 'linear-gradient(135deg,#7c3aed,#db2777)' : 'rgba(255,255,255,0.08)', color: 'white', fontWeight: 600, fontSize: '15px', cursor: name.trim() ? 'pointer' : 'not-allowed', fontFamily: 'inherit', boxShadow: name.trim() ? '0 4px 20px rgba(124,58,237,0.4)' : 'none', transition: 'background 0.2s, box-shadow 0.2s' }}
+            style={{ padding: '13px', borderRadius: '12px', border: 'none', background: name.trim() ? 'linear-gradient(135deg,#7c3aed,#db2777)' : 'rgba(255,255,255,0.08)', color: 'white', fontWeight: 600, fontSize: '15px', cursor: name.trim() ? 'pointer' : 'not-allowed', fontFamily: 'inherit' }}
           >Join Room</button>
         </form>
       </div>
@@ -77,11 +77,9 @@ export default function Room() {
   const [usersOpen, setUsersOpen] = useState(false);
   const [queue, setQueue] = useState([]);
   const [rightTab, setRightTab] = useState('chat');
-
-  // ── Reaction state ──
   const [incomingReaction, setIncomingReaction] = useState(null);
-
   const [panelWidth, setPanelWidth] = useState(280);
+
   const isResizing = useRef(false);
   const resizeStartX = useRef(0);
   const resizeStartW = useRef(0);
@@ -93,6 +91,11 @@ export default function Room() {
   const loadTimeoutRef = useRef(null);
   const roomIdRef = useRef(roomId);
 
+  // ✅ This is the key: tracks whether we INTEND the audio to be paused
+  // Checked inside onplay — if true, we immediately pause after play fires
+  const shouldBePausedRef = useRef(false);
+  const pendingSeekRef = useRef(null);
+
   const handleNameSubmit = (name) => { setUserName(name); setShowNameModal(false); };
 
   const startResize = (e) => {
@@ -101,12 +104,10 @@ export default function Room() {
     resizeStartW.current = panelWidth;
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
-
     const onMove = (e) => {
       if (!isResizing.current) return;
       const delta = resizeStartX.current - e.clientX;
-      const newW = Math.min(480, Math.max(260, resizeStartW.current + delta));
-      setPanelWidth(newW);
+      setPanelWidth(Math.min(480, Math.max(260, resizeStartW.current + delta)));
     };
     const onUp = () => {
       isResizing.current = false;
@@ -127,64 +128,199 @@ export default function Room() {
     navigate('/');
   };
 
-  const playSong = (song, url, emit = true, retryCount = 0, seekTo = 0) => {
+  // ✅ Get the raw HTML5 <audio> node from Howler — works even during loading
+  const getAudioNode = () => {
+    try {
+      return soundRef.current?._sounds?.[0]?._node || null;
+    } catch (_) { return null; }
+  };
+
+  // ✅ forcePause: directly pauses the <audio> element — bypasses all Howler async quirks
+  const forcePause = (seekTo) => {
+    shouldBePausedRef.current = true;
+
+    if (typeof seekTo === 'number' && seekTo >= 0) {
+      pausePositionRef.current = seekTo;
+      pendingSeekRef.current = seekTo;
+    }
+
+    // 1. Pause via Howler
+    try {
+      if (soundRef.current?.playing()) soundRef.current.pause();
+    } catch (_) {}
+
+    // 2. ALSO pause the raw HTML5 audio node directly — this is the reliable one
+    const node = getAudioNode();
+    if (node) {
+      try { node.pause(); } catch (_) {}
+      if (typeof seekTo === 'number' && seekTo >= 0) {
+        try { node.currentTime = seekTo; } catch (_) {}
+      }
+    }
+
+    setIsPlaying(false);
+  };
+
+  // ✅ forcePlay: seek and play the audio directly on the HTML5 node
+  const forcePlay = (seekTo) => {
+    shouldBePausedRef.current = false;
+    pendingSeekRef.current = null;
+
+    if (typeof seekTo === 'number' && seekTo >= 0) {
+      pausePositionRef.current = seekTo;
+    }
+
+    const s = soundRef.current;
+    if (!s) return;
+
+    try {
+      // Seek both ways for reliability
+      if (typeof seekTo === 'number' && seekTo >= 0) {
+        try { s.seek(seekTo); } catch (_) {}
+        const node = getAudioNode();
+        if (node) { try { node.currentTime = seekTo; } catch (_) {} }
+      }
+
+      if (s.state() === 'loaded') {
+        // Play via Howler if loaded
+        if (!s.playing()) s.play();
+        setIsPlaying(true);
+      } else {
+        // Still loading — play() will trigger once loaded
+        s.play();
+      }
+    } catch (e) {
+      console.error('forcePlay error:', e);
+    }
+  };
+
+  const playSong = (song, url, emit = true, retryCount = 0, seekTo = 0, startPaused = false) => {
     if (!url) { showToast('No playable URL found', 'error'); return; }
-    pausePositionRef.current = 0;
+
+    pausePositionRef.current = seekTo;
+    shouldBePausedRef.current = startPaused;
+    pendingSeekRef.current = seekTo > 0 ? seekTo : null;
+
     if (abortControllerRef.current) abortControllerRef.current.abort();
     abortControllerRef.current = new AbortController();
     const signal = abortControllerRef.current.signal;
+
     if (loadTimeoutRef.current) { clearTimeout(loadTimeoutRef.current); loadTimeoutRef.current = null; }
+
     setIsLoading(true);
     setIsPlaying(false);
     currentSongIdRef.current = song.id;
+
     if (soundRef.current) {
       try { soundRef.current.stop(); soundRef.current.unload(); } catch (e) {}
       soundRef.current = null;
     }
+
     const proxyUrl = getProxyUrl(url);
     const newSound = new Howl({
-      src: [proxyUrl], html5: true, volume: 1, preload: 'metadata',
-      format: ['mp3', 'mpeg'], xhr: { timeout: 30000, method: 'GET' },
+      src: [proxyUrl],
+      html5: true,
+      volume: 1,
+      preload: true,
+      format: ['mp3', 'mpeg'],
+      xhr: { timeout: 30000, method: 'GET' },
+
       onload: () => {
-        if (signal.aborted || currentSongIdRef.current !== song.id) { newSound.stop(); newSound.unload(); return; }
+        if (signal.aborted || currentSongIdRef.current !== song.id) {
+          newSound.stop(); newSound.unload(); return;
+        }
         if (loadTimeoutRef.current) { clearTimeout(loadTimeoutRef.current); loadTimeoutRef.current = null; }
         setIsLoading(false);
-        if (seekTo > 0) { try { newSound.seek(seekTo); } catch (e) {} }
-        try { newSound.play(); } catch (e) { setIsLoading(false); }
+
+        if (shouldBePausedRef.current) {
+          // Room is paused — seek to position but do NOT play
+          const node = newSound._sounds?.[0]?._node;
+          if (node) {
+            try { node.pause(); } catch (_) {}
+            if (pendingSeekRef.current !== null) {
+              try { node.currentTime = pendingSeekRef.current; } catch (_) {}
+            }
+          }
+          try {
+            if (pendingSeekRef.current !== null) newSound.seek(pendingSeekRef.current);
+          } catch (_) {}
+          pendingSeekRef.current = null;
+          setIsPlaying(false);
+        } else {
+          // Normal — play from seekTo
+          if (pendingSeekRef.current !== null) {
+            try { newSound.seek(pendingSeekRef.current); } catch (_) {}
+            pendingSeekRef.current = null;
+          }
+          try { newSound.play(); } catch (e) { setIsLoading(false); }
+        }
       },
-      onplay: () => { if (currentSongIdRef.current === song.id) { setIsPlaying(true); setIsLoading(false); } },
+
+      onplay: () => {
+        if (currentSongIdRef.current !== song.id) return;
+
+        // ✅ If we're supposed to be paused, kill it immediately when onplay fires
+        if (shouldBePausedRef.current) {
+          try { newSound.pause(); } catch (_) {}
+          const node = newSound._sounds?.[0]?._node;
+          if (node) {
+            try { node.pause(); } catch (_) {}
+            if (pendingSeekRef.current !== null) {
+              try { node.currentTime = pendingSeekRef.current; } catch (_) {}
+            }
+          }
+          pendingSeekRef.current = null;
+          setIsPlaying(false);
+          setIsLoading(false);
+          return;
+        }
+
+        setIsPlaying(true);
+        setIsLoading(false);
+      },
+
       onpause: () => setIsPlaying(false),
+      onstop: () => setIsPlaying(false),
+
       onend: () => {
         setIsPlaying(false);
         emitSongEnded(roomIdRef.current);
       },
-      onstop: () => setIsPlaying(false),
+
       onloaderror: (id, err) => {
         if (currentSongIdRef.current === song.id && !signal.aborted) {
           const errorMsg = String(err || '').toLowerCase();
-          const isCodecError = errorMsg.includes('codec') || errorMsg.includes('format');
-          if (isCodecError && retryCount < 1) {
-            setTimeout(() => { if (currentSongIdRef.current === song.id) playSong(song, url, false, retryCount + 1, seekTo); }, 500);
+          if ((errorMsg.includes('codec') || errorMsg.includes('format')) && retryCount < 1) {
+            setTimeout(() => {
+              if (currentSongIdRef.current === song.id)
+                playSong(song, url, false, retryCount + 1, seekTo, startPaused);
+            }, 500);
             return;
           }
           showToast('Could not load audio. Try another song.', 'error');
           setIsLoading(false); setIsPlaying(false);
         }
       },
-      onplayerror: () => { showToast('Could not play audio', 'error'); setIsLoading(false); setIsPlaying(false); }
+
+      onplayerror: () => {
+        showToast('Could not play audio', 'error');
+        setIsLoading(false); setIsPlaying(false);
+      },
     });
+
     soundRef.current = newSound;
     setSound(newSound);
     setCurrentSong(song);
+
     loadTimeoutRef.current = setTimeout(() => {
       if (soundRef.current === newSound && currentSongIdRef.current === song.id) {
-        try {
-          if (newSound.state() === 'loaded' || newSound.state() === 'loading') {
-            newSound.play(); setIsLoading(false);
-          }
-        } catch (e) {}
+        setIsLoading(false);
+        if (!shouldBePausedRef.current) {
+          try { newSound.play(); } catch (_) {}
+        }
       }
-    }, 5000);
+    }, 6000);
+
     if (emit) emitPlaySong(roomId, song, url, 0);
   };
 
@@ -199,36 +335,32 @@ export default function Room() {
       setChatMessages((chatHistory || []).map(msg => ({ ...msg, type: 'chat' })));
       setQueue(queue || []);
       if (currentSong && currentUrl) {
-        playSong(currentSong, currentUrl, false, 0, timestamp || 0);
+        // startPaused = !isPlaying so if room is paused, we load but don't play
+        playSong(currentSong, currentUrl, false, 0, timestamp || 0, !isPlaying);
       }
     });
 
     onUsersUpdated((updatedUsers) => setUsers([...updatedUsers]));
-    onPlaySong(({ songData, playUrl, timestamp }) => playSong(songData, playUrl, false, 0, timestamp || 0));
 
-    onPauseSong(({ timestamp }) => {
-      if (soundRef.current?.playing()) {
-        if (timestamp !== undefined) soundRef.current.seek(timestamp);
-        pausePositionRef.current = timestamp || soundRef.current.seek() || 0;
-        soundRef.current.pause();
-        setIsPlaying(false);
-      }
+    onPlaySong(({ songData, playUrl, timestamp }) => {
+      playSong(songData, playUrl, false, 0, timestamp || 0, false);
     });
 
+    // ✅ FIXED: directly pause the audio node — no Howler state checks
+    onPauseSong(({ timestamp }) => {
+      console.log('⏸ Received pause at:', timestamp);
+      forcePause(timestamp);
+    });
+
+    // ✅ FIXED: directly seek and play
     onResumeSong(({ timestamp }) => {
-      if (soundRef.current && !soundRef.current.playing()) {
-        if (timestamp !== undefined) soundRef.current.seek(timestamp);
-        pausePositionRef.current = timestamp || 0;
-        soundRef.current.play();
-        setIsPlaying(true);
-      }
+      console.log('▶ Received resume at:', timestamp);
+      forcePlay(timestamp);
     });
 
     onChatMessage(msg => setChatMessages(p => [...p, { ...msg, type: 'chat' }]));
     onSystemMessage(msg => setChatMessages(p => [...p, { ...msg, type: 'system' }]));
     onQueueUpdated((updatedQueue) => setQueue([...updatedQueue]));
-
-    // ── Listen for reactions from other room members ──
     onReaction(({ userName: fromName, emoji, id }) => {
       setIncomingReaction({ userName: fromName, emoji, id });
     });
@@ -249,7 +381,7 @@ export default function Room() {
   const handlePlaySong = (song) => {
     const audioUrlObj = selectBestAudioUrl(song);
     if (!audioUrlObj) { showToast('No audio available for this song', 'error'); return; }
-    playSong(song, audioUrlObj.url, true);
+    playSong(song, audioUrlObj.url, true, 0, 0, false);
   };
 
   const handleAddToQueue = (song) => {
@@ -266,17 +398,18 @@ export default function Room() {
   const handlePlayPause = () => {
     if (!soundRef.current || isLoading) return;
     try {
-      const isCurrentlyPlaying = soundRef.current.playing();
-      if (isCurrentlyPlaying) {
-        pausePositionRef.current = soundRef.current.seek() || 0;
-        soundRef.current.pause();
-        setIsPlaying(false);
-        emitPauseSong(roomId, pausePositionRef.current);
+      const node = getAudioNode();
+      const actuallyPlaying = node ? !node.paused : soundRef.current.playing();
+
+      if (actuallyPlaying) {
+        // Pause — get position from the raw node for accuracy
+        const currentPos = node ? node.currentTime : (soundRef.current.seek() || 0);
+        pausePositionRef.current = currentPos;
+        forcePause(currentPos);
+        emitPauseSong(roomId, currentPos);
       } else {
         const resumePos = pausePositionRef.current || 0;
-        if (Math.abs(soundRef.current.seek() - resumePos) > 1.0) soundRef.current.seek(resumePos);
-        soundRef.current.play();
-        setIsPlaying(true);
+        forcePlay(resumePos);
         emitResumeSong(roomId, resumePos);
       }
     } catch (e) {
@@ -285,10 +418,7 @@ export default function Room() {
     }
   };
 
-  // ── Send a reaction from this user to everyone in the room ──
-  const handleReaction = (emoji) => {
-    emitReaction(roomId, userName, emoji);
-  };
+  const handleReaction = (emoji) => emitReaction(roomId, userName, emoji);
 
   const handleShare = async () => {
     const url = `${window.location.origin}/room/${roomId}`;
@@ -322,12 +452,7 @@ export default function Room() {
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            {/* Room ID + Share */}
-            <div
-              onClick={handleShare}
-              style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 10px', background: 'rgba(255,255,255,0.04)', borderRadius: '99px', border: '1px solid rgba(255,255,255,0.07)', cursor: 'pointer' }}
-              title="Share room link"
-            >
+            <div onClick={handleShare} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 10px', background: 'rgba(255,255,255,0.04)', borderRadius: '99px', border: '1px solid rgba(255,255,255,0.07)', cursor: 'pointer' }}>
               <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#34d399', flexShrink: 0 }} />
               <span style={{ fontSize: '12px', color: '#8b8aa8', fontFamily: 'monospace', letterSpacing: '0.05em' }}>{roomId}</span>
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#55546a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -336,9 +461,8 @@ export default function Room() {
               </svg>
             </div>
 
-            {/* Exit */}
             <button onClick={handleExitRoom}
-              style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '6px 10px', borderRadius: '8px', border: '1px solid rgba(255,80,80,0.3)', background: 'rgba(255,80,80,0.1)', color: '#ff6b6b', cursor: 'pointer', fontSize: '12px', fontWeight: 600, transition: 'all 0.2s' }}
+              style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '6px 10px', borderRadius: '8px', border: '1px solid rgba(255,80,80,0.3)', background: 'rgba(255,80,80,0.1)', color: '#ff6b6b', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}
               onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,80,80,0.2)'}
               onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,80,80,0.1)'}
             >
@@ -352,37 +476,27 @@ export default function Room() {
 
         {/* Main area */}
         <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-
-          {/* Left: search + song list */}
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '12px', overflow: 'hidden', minWidth: 0 }}>
             <SearchBar onResultsFound={setSongs} />
             <SongList songs={songs} currentSong={currentSong} onSongSelect={handlePlaySong} onAddToQueue={handleAddToQueue} />
           </div>
 
-          {/* Right panel — resizable */}
           <div style={{ width: chatOpen ? `${panelWidth}px` : '0px', display: 'flex', flexDirection: 'column', borderLeft: chatOpen ? '1px solid rgba(255,255,255,0.05)' : 'none', overflow: 'hidden', transition: isResizing.current ? 'none' : 'width 0.2s ease', flexShrink: 0, position: 'relative' }}>
 
-            {/* Drag-to-resize handle */}
             {chatOpen && (
-              <div
-                onMouseDown={startResize}
-                title="Drag to resize"
-                style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: '6px', zIndex: 20, cursor: 'col-resize', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'transparent', transition: 'background 0.15s' }}
+              <div onMouseDown={startResize}
+                style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: '6px', zIndex: 20, cursor: 'col-resize', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                 onMouseEnter={e => e.currentTarget.style.background = 'rgba(167,139,250,0.15)'}
                 onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
               >
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', pointerEvents: 'none' }}>
-                  {[0, 1, 2].map(i => (
-                    <div key={i} style={{ width: '3px', height: '3px', borderRadius: '50%', background: 'rgba(167,139,250,0.5)' }} />
-                  ))}
+                  {[0,1,2].map(i => <div key={i} style={{ width: '3px', height: '3px', borderRadius: '50%', background: 'rgba(167,139,250,0.5)' }} />)}
                 </div>
               </div>
             )}
 
-            {/* Users dropdown */}
             <div style={{ padding: '12px 14px', borderBottom: '1px solid rgba(255,255,255,0.05)', flexShrink: 0 }}>
-              <div onClick={() => setUsersOpen(p => !p)}
-                style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', userSelect: 'none' }}>
+              <div onClick={() => setUsersOpen(p => !p)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', userSelect: 'none' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#55546a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" />
@@ -390,8 +504,7 @@ export default function Room() {
                   </svg>
                   <span style={{ fontSize: '12px', fontWeight: 600, color: '#6b6a84', letterSpacing: '0.05em', textTransform: 'uppercase' }}>Users ({users.length})</span>
                 </div>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#55546a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-                  style={{ transform: usersOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s', flexShrink: 0 }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#55546a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ transform: usersOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}>
                   <polyline points="6 9 12 15 18 9" />
                 </svg>
               </div>
@@ -410,19 +523,15 @@ export default function Room() {
               )}
             </div>
 
-            {/* Chat / Queue Tabs */}
             <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.05)', flexShrink: 0 }}>
-              <button onClick={() => setRightTab('chat')}
-                style={{ flex: 1, padding: '10px', border: 'none', background: 'transparent', color: rightTab === 'chat' ? '#a78bfa' : '#55546a', fontSize: '12px', fontWeight: 600, cursor: 'pointer', borderBottom: rightTab === 'chat' ? '2px solid #a78bfa' : '2px solid transparent', transition: 'all 0.2s' }}>
+              <button onClick={() => setRightTab('chat')} style={{ flex: 1, padding: '10px', border: 'none', background: 'transparent', color: rightTab === 'chat' ? '#a78bfa' : '#55546a', fontSize: '12px', fontWeight: 600, cursor: 'pointer', borderBottom: rightTab === 'chat' ? '2px solid #a78bfa' : '2px solid transparent' }}>
                 💬 Chat
               </button>
-              <button onClick={() => setRightTab('queue')}
-                style={{ flex: 1, padding: '10px', border: 'none', background: 'transparent', color: rightTab === 'queue' ? '#a78bfa' : '#55546a', fontSize: '12px', fontWeight: 600, cursor: 'pointer', borderBottom: rightTab === 'queue' ? '2px solid #a78bfa' : '2px solid transparent', transition: 'all 0.2s' }}>
+              <button onClick={() => setRightTab('queue')} style={{ flex: 1, padding: '10px', border: 'none', background: 'transparent', color: rightTab === 'queue' ? '#a78bfa' : '#55546a', fontSize: '12px', fontWeight: 600, cursor: 'pointer', borderBottom: rightTab === 'queue' ? '2px solid #a78bfa' : '2px solid transparent' }}>
                 🎵 Queue {queue.length > 0 && <span style={{ background: '#7c3aed', color: 'white', fontSize: '10px', borderRadius: '99px', padding: '1px 6px', marginLeft: '4px' }}>{queue.length}</span>}
               </button>
             </div>
 
-            {/* Keep both mounted, hide inactive */}
             <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
               <div style={{ display: rightTab === 'chat' ? 'flex' : 'none', flex: 1, flexDirection: 'column', overflow: 'hidden' }}>
                 <Chat roomId={roomId} userName={userName} messages={chatMessages} onNewMessage={handleNewChatMessage} />
@@ -434,57 +543,16 @@ export default function Room() {
           </div>
         </div>
 
-        {/* Floating side chat toggle */}
-        <div
-          onClick={() => setChatOpen(p => !p)}
-          title={chatOpen ? 'Close chat' : 'Open chat'}
-          style={{
-            position: 'fixed',
-            right: chatOpen ? `${panelWidth}px` : '0px',
-            top: '50%',
-            transform: 'translateY(-50%)',
-            zIndex: 30,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            width: '28px',
-            height: '72px',
-            background: chatOpen ? 'rgba(124,58,237,0.18)' : 'rgba(255,255,255,0.06)',
-            border: chatOpen
-              ? '1px solid rgba(167,139,250,0.35)'
-              : '1px solid rgba(255,255,255,0.08)',
-            borderRight: 'none',
-            borderRadius: '10px 0 0 10px',
-            cursor: 'pointer',
-            transition: 'right 0.2s ease, background 0.2s, border-color 0.2s',
-            backdropFilter: 'blur(12px)',
-          }}
-          onMouseEnter={e => {
-            e.currentTarget.style.background = chatOpen
-              ? 'rgba(124,58,237,0.28)'
-              : 'rgba(255,255,255,0.1)';
-          }}
-          onMouseLeave={e => {
-            e.currentTarget.style.background = chatOpen
-              ? 'rgba(124,58,237,0.18)'
-              : 'rgba(255,255,255,0.06)';
-          }}
+        <div onClick={() => setChatOpen(p => !p)}
+          style={{ position: 'fixed', right: chatOpen ? `${panelWidth}px` : '0px', top: '50%', transform: 'translateY(-50%)', zIndex: 30, display: 'flex', alignItems: 'center', justifyContent: 'center', width: '28px', height: '72px', background: chatOpen ? 'rgba(124,58,237,0.18)' : 'rgba(255,255,255,0.06)', border: chatOpen ? '1px solid rgba(167,139,250,0.35)' : '1px solid rgba(255,255,255,0.08)', borderRight: 'none', borderRadius: '10px 0 0 10px', cursor: 'pointer', transition: 'right 0.2s ease', backdropFilter: 'blur(12px)' }}
+          onMouseEnter={e => { e.currentTarget.style.background = chatOpen ? 'rgba(124,58,237,0.28)' : 'rgba(255,255,255,0.1)'; }}
+          onMouseLeave={e => { e.currentTarget.style.background = chatOpen ? 'rgba(124,58,237,0.18)' : 'rgba(255,255,255,0.06)'; }}
         >
-          <svg
-            width="14" height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke={chatOpen ? '#a78bfa' : '#6b6a84'}
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            style={{ transition: 'stroke 0.2s' }}
-          >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={chatOpen ? '#a78bfa' : '#6b6a84'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
           </svg>
         </div>
 
-        {/* Player — with reaction props wired in */}
         <Player
           currentSong={currentSong}
           isPlaying={isPlaying}
