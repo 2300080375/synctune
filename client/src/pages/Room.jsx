@@ -11,14 +11,14 @@ import {
   getSocket, joinRoom, leaveRoom,
   emitPlaySong, emitPauseSong, emitResumeSong, emitSongEnded,
   emitAddToQueue, emitRemoveFromQueue, emitPlayFromQueue,
-  emitSeekSong,           // ✅ ADD THIS
+  emitSeekSong,
   emitReaction,
   onRoomState, onUsersUpdated, onPlaySong, onPauseSong, onResumeSong, onQueueUpdated,
   onChatMessage, onSystemMessage, onReaction,
-  onSeekSong,             // ✅ ADD THIS
+  onSeekSong,
   offRoomState, offUsersUpdated, offPlaySong, offPauseSong, offResumeSong, offQueueUpdated,
   offChatMessage, offSystemMessage, offReaction,
-  offSeekSong,            // ✅ ADD THIS
+  offSeekSong,
 } from '../socket';
 
 const getProxyUrl = (url) =>
@@ -83,22 +83,18 @@ export default function Room() {
   const [incomingReaction, setIncomingReaction] = useState(null);
   const [panelWidth, setPanelWidth] = useState(280);
 
-  const isResizing = useRef(false);
-  const resizeStartX = useRef(0);
-  const resizeStartW = useRef(0);
-
-  const soundRef = useRef(null);
+  const isResizing     = useRef(false);
+  const resizeStartX   = useRef(0);
+  const resizeStartW   = useRef(0);
+  const soundRef       = useRef(null);
   const currentSongIdRef = useRef(null);
   const abortControllerRef = useRef(null);
-  const pausePositionRef = useRef(0);
-  const loadTimeoutRef = useRef(null);
-  const roomIdRef = useRef(roomId);
-
-  const shouldBePausedRef = useRef(false);
-  const pendingSeekRef = useRef(null);
-
-  // ✅ NEW: tracks if we are currently playing (for seek-while-playing logic)
-  const isPlayingRef = useRef(false);
+  const pausePositionRef   = useRef(0);
+  const loadTimeoutRef     = useRef(null);
+  const roomIdRef          = useRef(roomId);
+  const shouldBePausedRef  = useRef(false);
+  const pendingSeekRef     = useRef(null);
+  const isPlayingRef       = useRef(false); // ✅ always mirrors real play state
 
   const handleNameSubmit = (name) => { setUserName(name); setShowNameModal(false); };
 
@@ -133,9 +129,7 @@ export default function Room() {
   };
 
   const getAudioNode = () => {
-    try {
-      return soundRef.current?._sounds?.[0]?._node || null;
-    } catch (_) { return null; }
+    try { return soundRef.current?._sounds?.[0]?._node || null; } catch (_) { return null; }
   };
 
   const forcePause = (seekTo) => {
@@ -147,9 +141,7 @@ export default function Room() {
       pendingSeekRef.current = seekTo;
     }
 
-    try {
-      if (soundRef.current?.playing()) soundRef.current.pause();
-    } catch (_) {}
+    try { if (soundRef.current?.playing()) soundRef.current.pause(); } catch (_) {}
 
     const node = getAudioNode();
     if (node) {
@@ -180,7 +172,6 @@ export default function Room() {
         const node = getAudioNode();
         if (node) { try { node.currentTime = seekTo; } catch (_) {} }
       }
-
       if (s.state() === 'loaded') {
         if (!s.playing()) s.play();
         setIsPlaying(true);
@@ -192,28 +183,48 @@ export default function Room() {
     }
   };
 
-  // ✅ NEW: forceSeek — seeks without changing play/pause state
-  // Used when receiving remote seek events
+  // ✅ KEY FIX: forceSeek — seeks all listeners instantly without requiring pause/play
   const forceSeek = (timestamp) => {
     pausePositionRef.current = timestamp;
 
     const s = soundRef.current;
     const node = getAudioNode();
+    if (!s && !node) return;
 
-    // Seek the raw HTML5 node first — most reliable
-    if (node) {
-      try { node.currentTime = timestamp; } catch (_) {}
-    }
-    // Also seek via Howler for its internal state tracking
-    if (s) {
-      try { s.seek(timestamp); } catch (_) {}
-    }
+    const wasPlaying = isPlayingRef.current;
 
-    // If room was playing, resume from new position
-    if (isPlayingRef.current) {
-      if (node) { try { node.play(); } catch (_) {} }
-      else if (s && !s.playing()) { try { s.play(); } catch (_) {} }
-      setIsPlaying(true);
+    // Step 1: Stop current playback so browser flushes the buffer
+    try { if (s?.playing()) s.pause(); } catch (_) {}
+    if (node) { try { node.pause(); } catch (_) {} }
+
+    // Step 2: Seek to new timestamp
+    if (node) { try { node.currentTime = timestamp; } catch (_) {} }
+    try { if (s) s.seek(timestamp); } catch (_) {}
+
+    // Step 3: If room was playing, resume from new position after buffer flush
+    if (wasPlaying) {
+      shouldBePausedRef.current = false;
+      setTimeout(() => {
+        // Re-seek after tiny delay to ensure browser registered the new position
+        if (node) { try { node.currentTime = timestamp; } catch (_) {} }
+        try { if (s) s.seek(timestamp); } catch (_) {}
+
+        // Play via native node first (fastest)
+        if (node) {
+          const p = node.play();
+          if (p !== undefined) {
+            p.catch(() => {
+              // Fallback to Howler if native play blocked
+              try { if (s && !s.playing()) s.play(); } catch (_) {}
+            });
+          }
+        } else if (s) {
+          try { if (!s.playing()) s.play(); } catch (_) {}
+        }
+
+        isPlayingRef.current = true;
+        setIsPlaying(true);
+      }, 50); // 50ms: enough for buffer flush, imperceptible to user
     }
   };
 
@@ -280,7 +291,6 @@ export default function Room() {
 
       onplay: () => {
         if (currentSongIdRef.current !== song.id) return;
-
         if (shouldBePausedRef.current) {
           try { newSound.pause(); } catch (_) {}
           const node = newSound._sounds?.[0]?._node;
@@ -295,20 +305,13 @@ export default function Room() {
           setIsLoading(false);
           return;
         }
-
         isPlayingRef.current = true;
         setIsPlaying(true);
         setIsLoading(false);
       },
 
-      onpause: () => {
-        isPlayingRef.current = false;
-        setIsPlaying(false);
-      },
-      onstop: () => {
-        isPlayingRef.current = false;
-        setIsPlaying(false);
-      },
+      onpause: () => { isPlayingRef.current = false; setIsPlaying(false); },
+      onstop:  () => { isPlayingRef.current = false; setIsPlaying(false); },
 
       onend: () => {
         isPlayingRef.current = false;
@@ -384,7 +387,7 @@ export default function Room() {
       forcePlay(timestamp);
     });
 
-    // ✅ THE FIX: wire up seek-song from remote users
+    // ✅ THE ACTUAL FIX: receive seek from any room member and apply instantly
     onSeekSong(({ timestamp }) => {
       console.log('⏩ Received seek at:', timestamp);
       forceSeek(timestamp);
@@ -403,8 +406,7 @@ export default function Room() {
       leaveRoom();
       offRoomState(); offUsersUpdated(); offPlaySong(); offPauseSong();
       offResumeSong(); offQueueUpdated(); offChatMessage(); offSystemMessage();
-      offReaction();
-      offSeekSong(); // ✅ cleanup
+      offReaction(); offSeekSong(); // ✅ cleanup seek listener
       if (soundRef.current) {
         try { soundRef.current.stop(); soundRef.current.unload(); soundRef.current = null; } catch (e) {}
       }
@@ -425,8 +427,8 @@ export default function Room() {
   };
 
   const handleRemoveFromQueue = (index) => emitRemoveFromQueue(roomId, index);
-  const handlePlayFromQueue = (index) => emitPlayFromQueue(roomId, index);
-  const handleNewChatMessage = (msg) => setChatMessages(p => [...p, msg]);
+  const handlePlayFromQueue   = (index) => emitPlayFromQueue(roomId, index);
+  const handleNewChatMessage  = (msg)   => setChatMessages(p => [...p, msg]);
 
   const handlePlayPause = () => {
     if (!soundRef.current || isLoading) return;
@@ -450,27 +452,36 @@ export default function Room() {
     }
   };
 
-  // ✅ NEW: called by Player when user drags and releases the seek bar
+  // ✅ Called by Player when user releases the seek bar
+  // Seeks locally first (instant feedback) then broadcasts to room
   const handleSeek = (newTime) => {
     if (!soundRef.current) return;
 
     pausePositionRef.current = newTime;
 
-    // Seek locally first — instant feedback
+    const s    = soundRef.current;
     const node = getAudioNode();
-    if (node) { try { node.currentTime = newTime; } catch (_) {} }
-    try { soundRef.current.seek(newTime); } catch (_) {}
 
-    // If was playing, keep playing from new position
+    // Seek local audio immediately
+    if (node) { try { node.currentTime = newTime; } catch (_) {} }
+    try { s.seek(newTime); } catch (_) {}
+
+    // If playing, keep playing from new position
     if (isPlayingRef.current) {
-      if (node) { try { node.play().catch(() => {}); } catch (_) {} }
-      else if (!soundRef.current.playing()) {
-        try { soundRef.current.play(); } catch (_) {}
+      if (node) {
+        const p = node.play();
+        if (p !== undefined) {
+          p.catch(() => {
+            try { if (!s.playing()) s.play(); } catch (_) {}
+          });
+        }
+      } else if (!s.playing()) {
+        try { s.play(); } catch (_) {}
       }
       setIsPlaying(true);
     }
 
-    // Broadcast to all other users in the room
+    // ✅ Broadcast seek to all room members via socket
     emitSeekSong(roomId, newTime);
   };
 
@@ -614,7 +625,7 @@ export default function Room() {
           isPlaying={isPlaying}
           isLoading={isLoading}
           onPlay={handlePlayPause}
-          onSeek={handleSeek}          
+          onSeek={handleSeek}
           sound={sound}
           onNext={() => emitPlayFromQueue(roomId, 0)}
           hasNext={queue.length > 0}

@@ -16,7 +16,6 @@ const REACTIONS = [
 
 const BAR_COUNT = 60;
 
-// Generate stable random bar heights once per song
 function generateBars() {
   return Array.from({ length: BAR_COUNT }, () => 0.15 + Math.random() * 0.75);
 }
@@ -29,16 +28,16 @@ export default function Player({
   sound,
   onNext,
   hasNext,
-  // NEW: pass these from Room.jsx
-  onReaction,       // fn(emoji) — emits reaction to room via socket
-  incomingReaction, // { emoji, userName, id } — latest reaction received from socket
+  onSeek,           // ✅ NEW: broadcasts seek to room
+  onReaction,
+  incomingReaction,
 }) {
-  const [progress, setProgress]     = useState(0);
-  const [duration, setDuration]     = useState(0);
-  const [volume, setVolume]         = useState(1);
-  const [isSeeking, setIsSeeking]   = useState(false);
-  const [floaters, setFloaters]     = useState([]);  // floating emoji elements
-  const [pulseLevel, setPulseLevel] = useState(0);   // 0–1 waveform pulse intensity
+  const [progress, setProgress]   = useState(0);
+  const [duration, setDuration]   = useState(0);
+  const [volume, setVolume]       = useState(1);
+  const [isSeeking, setIsSeeking] = useState(false);
+  const [floaters, setFloaters]   = useState([]);
+  const [pulseLevel, setPulseLevel] = useState(0);
 
   const progressUpdateRef = useRef(null);
   const canvasRef         = useRef(null);
@@ -47,7 +46,6 @@ export default function Player({
   const animFrameRef      = useRef(null);
   const floaterIdRef      = useRef(0);
 
-  // Regenerate bars on new song
   useEffect(() => {
     barsRef.current = generateBars();
   }, [currentSong?.id]);
@@ -93,25 +91,22 @@ export default function Player({
 
       ctx.clearRect(0, 0, W, H);
 
-      const pulse    = pulseRef.current;
-      const gap      = 2 * (window.devicePixelRatio || 1);
-      const barW     = (W - gap * (BAR_COUNT - 1)) / BAR_COUNT;
-      const midY     = H / 2;
-      const pct      = duration > 0 ? progress / duration : 0;
-      const now      = Date.now();
+      const pulse = pulseRef.current;
+      const gap   = 2 * (window.devicePixelRatio || 1);
+      const barW  = (W - gap * (BAR_COUNT - 1)) / BAR_COUNT;
+      const midY  = H / 2;
+      const pct   = duration > 0 ? progress / duration : 0;
+      const now   = Date.now();
 
       for (let i = 0; i < BAR_COUNT; i++) {
         const played = i / BAR_COUNT < pct;
-        const wave   = pulse > 0.05
-          ? Math.sin(i * 0.35 + now * 0.008) * pulse * 0.5
-          : 0;
+        const wave   = pulse > 0.05 ? Math.sin(i * 0.35 + now * 0.008) * pulse * 0.5 : 0;
         const h      = barsRef.current[i] * (H * 0.82) * (1 + wave);
         const x      = i * (barW + gap);
         const top    = midY - h / 2;
         const rx     = Math.min(barW / 2, 2 * (window.devicePixelRatio || 1));
 
         if (played) {
-          // Played: purple; pulse shifts toward bright pink
           const r = Math.round(124 + pulse * 80);
           const g = Math.round(58  - pulse * 20);
           const b = Math.round(237 - pulse * 60);
@@ -125,7 +120,6 @@ export default function Player({
         ctx.fill();
       }
 
-      // Decay pulse
       if (pulseRef.current > 0) {
         pulseRef.current = Math.max(0, pulseRef.current - 0.025);
         setPulseLevel(pulseRef.current);
@@ -138,42 +132,51 @@ export default function Player({
     return () => { running = false; cancelAnimationFrame(animFrameRef.current); };
   }, [progress, duration]);
 
-  // Trigger pulse + floater on incoming reaction from ANY room member
+  // Incoming reaction from room
   useEffect(() => {
     if (!incomingReaction) return;
     triggerReactionEffect(incomingReaction.emoji, incomingReaction.userName);
   }, [incomingReaction]);
 
   const triggerReactionEffect = useCallback((emoji, fromName) => {
-    // Spike the pulse
     pulseRef.current = 1;
-
-    // Add a floating emoji
-    const id = floaterIdRef.current++;
-    const left = 5 + Math.random() * 80; // % across the waveform
-    const label = fromName ? `${fromName}` : '';
-    setFloaters(prev => [...prev, { id, emoji, left, label }]);
-
-    // Remove after animation
+    const id   = floaterIdRef.current++;
+    const left = 5 + Math.random() * 80;
+    setFloaters(prev => [...prev, { id, emoji, left, label: fromName || '' }]);
     setTimeout(() => {
       setFloaters(prev => prev.filter(f => f.id !== id));
     }, 1600);
   }, []);
 
   const handleLocalReaction = (emoji) => {
-    // Trigger visual immediately for self
     triggerReactionEffect(emoji, 'You');
-    // Broadcast to room
     if (onReaction) onReaction(emoji);
   };
 
-  const handleSeek = (e) => {
+  // ✅ FIXED: onChange only updates local UI while dragging
+  const handleSeekChange = (e) => {
     const t = Number(e.target.value);
-    if (sound && !isLoading) { try { sound.seek(t); setProgress(t); } catch (_) {} }
+    setProgress(t); // just update the visual while dragging
   };
+
   const handleSeekStart = () => setIsSeeking(true);
-  const handleSeekEnd   = (e) => { setIsSeeking(false); handleSeek(e); };
-  const handleVolume    = (e) => {
+
+  // ✅ FIXED: onMouseUp/onTouchEnd — seek locally + broadcast to room
+  const handleSeekEnd = (e) => {
+    const t = Number(e.target.value);
+    setIsSeeking(false);
+    setProgress(t);
+
+    // Seek local audio
+    if (sound && !isLoading) {
+      try { sound.seek(t); } catch (_) {}
+    }
+
+    // ✅ Broadcast to all room members
+    if (onSeek) onSeek(t);
+  };
+
+  const handleVolume = (e) => {
     const v = Number(e.target.value);
     setVolume(v);
     if (sound) { try { sound.volume(v); } catch (_) {} }
@@ -184,14 +187,13 @@ export default function Player({
   return (
     <div style={{ background: 'rgba(13,13,20,0.97)', borderTop: '1px solid rgba(255,255,255,0.06)', backdropFilter: 'blur(24px)', padding: '10px 20px 14px', flexShrink: 0 }}>
 
-      {/* ── Waveform progress bar ── */}
+      {/* Waveform progress bar */}
       <div style={{ position: 'relative', height: '48px', marginBottom: '4px', cursor: 'pointer' }}>
         <canvas
           ref={canvasRef}
           style={{ width: '100%', height: '48px', display: 'block', borderRadius: '6px' }}
         />
 
-        {/* Pulse ring overlay */}
         {pulseRef.current > 0.1 && (
           <div style={{
             position: 'absolute', inset: 0, borderRadius: '6px', pointerEvents: 'none',
@@ -200,13 +202,9 @@ export default function Player({
           }} />
         )}
 
-        {/* Floating emoji reactions */}
         {floaters.map(f => (
           <div key={f.id} style={{
-            position: 'absolute',
-            bottom: '0',
-            left: `${f.left}%`,
-            pointerEvents: 'none',
+            position: 'absolute', bottom: '0', left: `${f.left}%`, pointerEvents: 'none',
             animation: 'floatUp 1.5s ease-out forwards',
             display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px',
           }}>
@@ -219,11 +217,14 @@ export default function Player({
           </div>
         ))}
 
-        {/* Invisible seek input over the canvas */}
+        {/* ✅ FIXED: onChange = visual only, onMouseUp/onTouchEnd = seek + broadcast */}
         <input
           type="range" min="0" max={duration || 0} step="0.1" value={progress}
-          onChange={handleSeek} onMouseDown={handleSeekStart} onMouseUp={handleSeekEnd}
-          onTouchStart={handleSeekStart} onTouchEnd={handleSeekEnd}
+          onChange={handleSeekChange}
+          onMouseDown={handleSeekStart}
+          onMouseUp={handleSeekEnd}
+          onTouchStart={handleSeekStart}
+          onTouchEnd={handleSeekEnd}
           disabled={isLoading || !sound}
           style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0, cursor: 'pointer', zIndex: 10 }}
         />
@@ -235,7 +236,7 @@ export default function Player({
         <span style={{ fontSize: '10px', color: '#55546a', fontFamily: 'monospace' }}>{fmt(duration)}</span>
       </div>
 
-      {/* ── Reaction buttons ── */}
+      {/* Reaction buttons */}
       <div style={{ display: 'flex', gap: '6px', justifyContent: 'center', marginBottom: '10px' }}>
         {REACTIONS.map(({ emoji, label }) => (
           <button
@@ -244,15 +245,11 @@ export default function Player({
             disabled={!currentSong}
             title={label}
             style={{
-              background: 'rgba(255,255,255,0.05)',
-              border: '1px solid rgba(255,255,255,0.08)',
-              borderRadius: '99px',
-              padding: '4px 10px',
-              fontSize: '16px',
+              background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)',
+              borderRadius: '99px', padding: '4px 10px', fontSize: '16px',
               cursor: currentSong ? 'pointer' : 'not-allowed',
               opacity: currentSong ? 1 : 0.4,
-              transition: 'transform 0.1s, background 0.15s',
-              lineHeight: 1.4,
+              transition: 'transform 0.1s, background 0.15s', lineHeight: 1.4,
             }}
             onMouseEnter={e => { if (currentSong) e.currentTarget.style.background = 'rgba(255,255,255,0.12)'; }}
             onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; }}
@@ -264,7 +261,7 @@ export default function Player({
         ))}
       </div>
 
-      {/* ── Controls row ── */}
+      {/* Controls row */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
 
         {/* Song info */}
@@ -353,7 +350,6 @@ export default function Player({
         </div>
       </div>
 
-      {/* Float-up keyframe */}
       <style>{`
         @keyframes floatUp {
           0%   { opacity: 1; transform: translateY(0) scale(1); }
