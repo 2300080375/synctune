@@ -40,10 +40,7 @@ function decryptUrl(encryptedUrl) {
     decrypted = Buffer.concat([decrypted, decipher.final()]);
     let url = decrypted.toString('utf8').replace(/\x00+$/, '').trim();
 
-    // Fix protocol
     url = url.replace(/^http:/, 'https:');
-
-    // Replace quality precisely — only in filename
     url = url
       .replace(/_96\.mp4/g, '_320.mp4')
       .replace(/_96\.mp3/g, '_320.mp3')
@@ -52,7 +49,7 @@ function decryptUrl(encryptedUrl) {
 
     console.log('🔓 Decrypted URL:', url.substring(0, 120));
     return url || null;
-  } catch(e) {
+  } catch (e) {
     console.log('❌ Decrypt failed:', e.message);
     return null;
   }
@@ -115,7 +112,7 @@ app.post('/api/gift/:giftId/reply', (req, res) => {
 });
 
 ////////////////////////////////////////////////////////////
-// 🔥 AUDIO PROXY
+// 🔥 AUDIO PROXY — FIXED (range support + clean abort)
 ////////////////////////////////////////////////////////////
 
 app.get('/api/audio', (req, res) => {
@@ -125,30 +122,60 @@ app.get('/api/audio', (req, res) => {
   const audioUrl = decodeURIComponent(url);
   console.log("🎵 Streaming audio:", audioUrl.substring(0, 80));
 
+  // ✅ Forward range header so browser can seek/chunk properly
+  const range = req.headers['range'];
+
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'Accept': 'audio/*, */*;q=0.01',
+    'Referer': 'https://www.jiosaavn.com/',
+    'Origin': 'https://www.jiosaavn.com',
+    'Accept-Encoding': 'identity',
+  };
+
+  if (range) {
+    headers['Range'] = range;
+    console.log("📦 Range request:", range);
+  }
+
   const request = https.get(audioUrl, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      'Accept': 'audio/*, */*;q=0.01',
-      'Referer': 'https://www.jiosaavn.com/',
-      'Origin': 'https://www.jiosaavn.com',
-      'Accept-Encoding': 'identity'
-    },
-    timeout: 30000
+    headers,
+    timeout: 60000, // ✅ Increased from 30s to 60s
   }, (audioRes) => {
     console.log(`✅ Audio response - Status: ${audioRes.statusCode}, Size: ${audioRes.headers['content-length']}`);
 
     if (audioRes.statusCode === 404) return res.status(404).json({ error: 'Audio not found' });
     if (audioRes.statusCode >= 400) return res.status(audioRes.statusCode).json({ error: `Server returned ${audioRes.statusCode}` });
 
-    res.writeHead(audioRes.statusCode, {
+    // ✅ Build response headers
+    const responseHeaders = {
       'Content-Type': 'audio/mpeg',
       'Access-Control-Allow-Origin': '*',
       'Accept-Ranges': 'bytes',
       'Cache-Control': 'public, max-age=3600',
-      'Content-Length': audioRes.headers['content-length'] || undefined
-    });
+    };
+
+    if (audioRes.headers['content-length']) {
+      responseHeaders['Content-Length'] = audioRes.headers['content-length'];
+    }
+    if (audioRes.headers['content-range']) {
+      responseHeaders['Content-Range'] = audioRes.headers['content-range'];
+    }
+
+    // ✅ 206 Partial Content for range requests, 200 for full
+    res.writeHead(audioRes.statusCode, responseHeaders);
 
     audioRes.pipe(res);
+
+    // ✅ Clean abort — browser closed connection (seeking/skip), not a real error
+    req.on('close', () => {
+      if (!res.writableEnded) {
+        audioRes.destroy();
+        request.destroy();
+        console.log("⚠️ Client disconnected, audio stream cleaned up");
+      }
+    });
+
     audioRes.on('error', (err) => {
       console.error("❌ Audio stream error:", err.message);
       if (!res.headersSent) res.status(500).json({ error: 'Stream error' });
@@ -212,42 +239,11 @@ app.get('/api/gifs', (req, res) => {
 // 🔍 SEARCH PROXY
 ////////////////////////////////////////////////////////////
 
-const SAAVN_MIRRORS = [
-  'saavn.sumit.co',
-  'jiosaavn-api-privatecvc2.vercel.app',
-  'saavnapi-nine.vercel.app',
-];
-
-function fetchFromMirror(mirror, query) {
-  return new Promise((resolve, reject) => {
-    const path = `/api/search/songs?query=${encodeURIComponent(query)}&limit=20`;
-    const options = {
-      hostname: mirror, path, method: 'GET',
-      headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' },
-      timeout: 8000,
-    };
-    const req = https.request(options, (res) => {
-      if (res.statusCode !== 200) return reject(new Error(`Mirror ${mirror} returned ${res.statusCode}`));
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try { resolve(JSON.parse(data)); } catch { reject(new Error('Invalid JSON')); }
-      });
-    });
-    req.on('error', reject);
-    req.on('timeout', () => { req.destroy(); reject(new Error('Timeout')); });
-    req.end();
-  });
-}
-
-// ✅ REPLACE the entire app.get('/api/search') handler in server/index.js with this:
-
 app.get('/api/search', async (req, res) => {
   const { query } = req.query;
   if (!query) return res.status(400).json({ error: 'Query required' });
   console.log("🔍 Search:", query);
 
-  // Try mirrors first (they return already-processed data with downloadUrl)
   const MIRRORS = [
     'saavn.sumit.co',
     'jiosaavn-api-privatecvc2.vercel.app',
@@ -341,11 +337,11 @@ app.get('/api/search', async (req, res) => {
             ] : [],
             downloadUrl: audioUrl ? [{ quality: '320kbps', url: audioUrl }] : [],
           };
-        }).filter(s => s.downloadUrl.length > 0); // only return songs with audio
+        }).filter(s => s.downloadUrl.length > 0);
 
         console.log(`✅ Direct JioSaavn: ${results.length} results with audio`);
         return res.json({ data: { results } });
-      } catch(e) {
+      } catch (e) {
         console.log("❌ Parse error:", e.message);
         res.status(500).json({ error: 'Search failed' });
       }
@@ -361,6 +357,7 @@ app.get('/api/search', async (req, res) => {
     res.status(504).json({ error: 'Timeout' });
   });
 });
+
 ////////////////////////////////////////////////////////////
 // 🔌 SOCKET.IO
 ////////////////////////////////////////////////////////////
@@ -405,7 +402,7 @@ io.on('connection', (socket) => {
       if (gift.chatHistory.length > 100) gift.chatHistory.shift();
     }
     io.to(chatRoom).emit('gift-chat-message', msg);
-    console.log(`💬 Gift chat [${giftId}] ${userName}: ${text.trim().slice(0,40)}`);
+    console.log(`💬 Gift chat [${giftId}] ${userName}: ${text.trim().slice(0, 40)}`);
   });
 
   socket.on('join-room', ({ roomId, userId, userName }) => {
@@ -439,40 +436,39 @@ io.on('connection', (socket) => {
     }
   });
 
+  // ✅ FIXED: socket.to() so sender doesn't get echo and double-trigger
   socket.on('play-song', ({ roomId, songData, playUrl, timestamp }) => {
     roomManager.updateSongState(roomId, songData, playUrl, timestamp, true);
     roomPlayTimestamps.set(roomId, { startedAt: Date.now(), timestamp: timestamp || 0 });
-    io.to(roomId).emit('play-song', { songData, playUrl, timestamp });
+    socket.to(roomId).emit('play-song', { songData, playUrl, timestamp });
   });
 
   socket.on('pause-song', ({ roomId, timestamp }) => {
-  const room = roomManager.getRoom(roomId);
-  if (room) {
-    roomManager.updateSongState(roomId, room.currentSong, room.currentUrl, timestamp, false);
-    roomPlayTimestamps.delete(roomId);
-    // ✅ socket.to() — sender ki emit avvatledu!
-    socket.to(roomId).emit('pause-song', { timestamp });
-  }
-});
+    const room = roomManager.getRoom(roomId);
+    if (room) {
+      roomManager.updateSongState(roomId, room.currentSong, room.currentUrl, timestamp, false);
+      roomPlayTimestamps.delete(roomId);
+      socket.to(roomId).emit('pause-song', { timestamp });
+    }
+  });
 
   socket.on('seek-song', ({ roomId, timestamp }) => {
     const room = roomManager.getRoom(roomId);
     if (room) {
       roomManager.updateSongState(roomId, room.currentSong, room.currentUrl, timestamp, room.isPlaying);
       if (room.isPlaying) roomPlayTimestamps.set(roomId, { startedAt: Date.now(), timestamp });
-      io.to(roomId).emit('seek-song', { timestamp });
+      socket.to(roomId).emit('seek-song', { timestamp });
     }
   });
 
   socket.on('resume-song', ({ roomId, timestamp }) => {
-  const room = roomManager.getRoom(roomId);
-  if (room) {
-    roomManager.updateSongState(roomId, room.currentSong, room.currentUrl, timestamp, true);
-    roomPlayTimestamps.set(roomId, { startedAt: Date.now(), timestamp });
-    // ✅ socket.to() — sender ki emit avvatledu!
-    socket.to(roomId).emit('resume-song', { timestamp });
-  }
-});
+    const room = roomManager.getRoom(roomId);
+    if (room) {
+      roomManager.updateSongState(roomId, room.currentSong, room.currentUrl, timestamp, true);
+      roomPlayTimestamps.set(roomId, { startedAt: Date.now(), timestamp });
+      socket.to(roomId).emit('resume-song', { timestamp });
+    }
+  });
 
   socket.on('chat-message', ({ roomId, user, text, time, msgType = 'text', stickerId, gifUrl, gifTitle, uploadData, uploadName }) => {
     const message = { user, text, time, msgType, stickerId, gifUrl, gifTitle, uploadData, uploadName };
