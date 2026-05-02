@@ -11,11 +11,14 @@ import {
   getSocket, joinRoom, leaveRoom,
   emitPlaySong, emitPauseSong, emitResumeSong, emitSongEnded,
   emitAddToQueue, emitRemoveFromQueue, emitPlayFromQueue,
+  emitSeekSong,           // ✅ ADD THIS
   emitReaction,
   onRoomState, onUsersUpdated, onPlaySong, onPauseSong, onResumeSong, onQueueUpdated,
   onChatMessage, onSystemMessage, onReaction,
+  onSeekSong,             // ✅ ADD THIS
   offRoomState, offUsersUpdated, offPlaySong, offPauseSong, offResumeSong, offQueueUpdated,
   offChatMessage, offSystemMessage, offReaction,
+  offSeekSong,            // ✅ ADD THIS
 } from '../socket';
 
 const getProxyUrl = (url) =>
@@ -91,10 +94,11 @@ export default function Room() {
   const loadTimeoutRef = useRef(null);
   const roomIdRef = useRef(roomId);
 
-  // ✅ This is the key: tracks whether we INTEND the audio to be paused
-  // Checked inside onplay — if true, we immediately pause after play fires
   const shouldBePausedRef = useRef(false);
   const pendingSeekRef = useRef(null);
+
+  // ✅ NEW: tracks if we are currently playing (for seek-while-playing logic)
+  const isPlayingRef = useRef(false);
 
   const handleNameSubmit = (name) => { setUserName(name); setShowNameModal(false); };
 
@@ -128,28 +132,25 @@ export default function Room() {
     navigate('/');
   };
 
-  // ✅ Get the raw HTML5 <audio> node from Howler — works even during loading
   const getAudioNode = () => {
     try {
       return soundRef.current?._sounds?.[0]?._node || null;
     } catch (_) { return null; }
   };
 
-  // ✅ forcePause: directly pauses the <audio> element — bypasses all Howler async quirks
   const forcePause = (seekTo) => {
     shouldBePausedRef.current = true;
+    isPlayingRef.current = false;
 
     if (typeof seekTo === 'number' && seekTo >= 0) {
       pausePositionRef.current = seekTo;
       pendingSeekRef.current = seekTo;
     }
 
-    // 1. Pause via Howler
     try {
       if (soundRef.current?.playing()) soundRef.current.pause();
     } catch (_) {}
 
-    // 2. ALSO pause the raw HTML5 audio node directly — this is the reliable one
     const node = getAudioNode();
     if (node) {
       try { node.pause(); } catch (_) {}
@@ -161,9 +162,9 @@ export default function Room() {
     setIsPlaying(false);
   };
 
-  // ✅ forcePlay: seek and play the audio directly on the HTML5 node
   const forcePlay = (seekTo) => {
     shouldBePausedRef.current = false;
+    isPlayingRef.current = true;
     pendingSeekRef.current = null;
 
     if (typeof seekTo === 'number' && seekTo >= 0) {
@@ -174,7 +175,6 @@ export default function Room() {
     if (!s) return;
 
     try {
-      // Seek both ways for reliability
       if (typeof seekTo === 'number' && seekTo >= 0) {
         try { s.seek(seekTo); } catch (_) {}
         const node = getAudioNode();
@@ -182,15 +182,38 @@ export default function Room() {
       }
 
       if (s.state() === 'loaded') {
-        // Play via Howler if loaded
         if (!s.playing()) s.play();
         setIsPlaying(true);
       } else {
-        // Still loading — play() will trigger once loaded
         s.play();
       }
     } catch (e) {
       console.error('forcePlay error:', e);
+    }
+  };
+
+  // ✅ NEW: forceSeek — seeks without changing play/pause state
+  // Used when receiving remote seek events
+  const forceSeek = (timestamp) => {
+    pausePositionRef.current = timestamp;
+
+    const s = soundRef.current;
+    const node = getAudioNode();
+
+    // Seek the raw HTML5 node first — most reliable
+    if (node) {
+      try { node.currentTime = timestamp; } catch (_) {}
+    }
+    // Also seek via Howler for its internal state tracking
+    if (s) {
+      try { s.seek(timestamp); } catch (_) {}
+    }
+
+    // If room was playing, resume from new position
+    if (isPlayingRef.current) {
+      if (node) { try { node.play(); } catch (_) {} }
+      else if (s && !s.playing()) { try { s.play(); } catch (_) {} }
+      setIsPlaying(true);
     }
   };
 
@@ -199,6 +222,7 @@ export default function Room() {
 
     pausePositionRef.current = seekTo;
     shouldBePausedRef.current = startPaused;
+    isPlayingRef.current = !startPaused;
     pendingSeekRef.current = seekTo > 0 ? seekTo : null;
 
     if (abortControllerRef.current) abortControllerRef.current.abort();
@@ -233,7 +257,6 @@ export default function Room() {
         setIsLoading(false);
 
         if (shouldBePausedRef.current) {
-          // Room is paused — seek to position but do NOT play
           const node = newSound._sounds?.[0]?._node;
           if (node) {
             try { node.pause(); } catch (_) {}
@@ -247,7 +270,6 @@ export default function Room() {
           pendingSeekRef.current = null;
           setIsPlaying(false);
         } else {
-          // Normal — play from seekTo
           if (pendingSeekRef.current !== null) {
             try { newSound.seek(pendingSeekRef.current); } catch (_) {}
             pendingSeekRef.current = null;
@@ -259,7 +281,6 @@ export default function Room() {
       onplay: () => {
         if (currentSongIdRef.current !== song.id) return;
 
-        // ✅ If we're supposed to be paused, kill it immediately when onplay fires
         if (shouldBePausedRef.current) {
           try { newSound.pause(); } catch (_) {}
           const node = newSound._sounds?.[0]?._node;
@@ -275,14 +296,22 @@ export default function Room() {
           return;
         }
 
+        isPlayingRef.current = true;
         setIsPlaying(true);
         setIsLoading(false);
       },
 
-      onpause: () => setIsPlaying(false),
-      onstop: () => setIsPlaying(false),
+      onpause: () => {
+        isPlayingRef.current = false;
+        setIsPlaying(false);
+      },
+      onstop: () => {
+        isPlayingRef.current = false;
+        setIsPlaying(false);
+      },
 
       onend: () => {
+        isPlayingRef.current = false;
         setIsPlaying(false);
         emitSongEnded(roomIdRef.current);
       },
@@ -335,7 +364,6 @@ export default function Room() {
       setChatMessages((chatHistory || []).map(msg => ({ ...msg, type: 'chat' })));
       setQueue(queue || []);
       if (currentSong && currentUrl) {
-        // startPaused = !isPlaying so if room is paused, we load but don't play
         playSong(currentSong, currentUrl, false, 0, timestamp || 0, !isPlaying);
       }
     });
@@ -346,16 +374,20 @@ export default function Room() {
       playSong(songData, playUrl, false, 0, timestamp || 0, false);
     });
 
-    // ✅ FIXED: directly pause the audio node — no Howler state checks
     onPauseSong(({ timestamp }) => {
       console.log('⏸ Received pause at:', timestamp);
       forcePause(timestamp);
     });
 
-    // ✅ FIXED: directly seek and play
     onResumeSong(({ timestamp }) => {
       console.log('▶ Received resume at:', timestamp);
       forcePlay(timestamp);
+    });
+
+    // ✅ THE FIX: wire up seek-song from remote users
+    onSeekSong(({ timestamp }) => {
+      console.log('⏩ Received seek at:', timestamp);
+      forceSeek(timestamp);
     });
 
     onChatMessage(msg => setChatMessages(p => [...p, { ...msg, type: 'chat' }]));
@@ -372,6 +404,7 @@ export default function Room() {
       offRoomState(); offUsersUpdated(); offPlaySong(); offPauseSong();
       offResumeSong(); offQueueUpdated(); offChatMessage(); offSystemMessage();
       offReaction();
+      offSeekSong(); // ✅ cleanup
       if (soundRef.current) {
         try { soundRef.current.stop(); soundRef.current.unload(); soundRef.current = null; } catch (e) {}
       }
@@ -402,7 +435,6 @@ export default function Room() {
       const actuallyPlaying = node ? !node.paused : soundRef.current.playing();
 
       if (actuallyPlaying) {
-        // Pause — get position from the raw node for accuracy
         const currentPos = node ? node.currentTime : (soundRef.current.seek() || 0);
         pausePositionRef.current = currentPos;
         forcePause(currentPos);
@@ -416,6 +448,30 @@ export default function Room() {
       setIsPlaying(false);
       showToast('Error controlling playback', 'error');
     }
+  };
+
+  // ✅ NEW: called by Player when user drags and releases the seek bar
+  const handleSeek = (newTime) => {
+    if (!soundRef.current) return;
+
+    pausePositionRef.current = newTime;
+
+    // Seek locally first — instant feedback
+    const node = getAudioNode();
+    if (node) { try { node.currentTime = newTime; } catch (_) {} }
+    try { soundRef.current.seek(newTime); } catch (_) {}
+
+    // If was playing, keep playing from new position
+    if (isPlayingRef.current) {
+      if (node) { try { node.play().catch(() => {}); } catch (_) {} }
+      else if (!soundRef.current.playing()) {
+        try { soundRef.current.play(); } catch (_) {}
+      }
+      setIsPlaying(true);
+    }
+
+    // Broadcast to all other users in the room
+    emitSeekSong(roomId, newTime);
   };
 
   const handleReaction = (emoji) => emitReaction(roomId, userName, emoji);
@@ -558,6 +614,7 @@ export default function Room() {
           isPlaying={isPlaying}
           isLoading={isLoading}
           onPlay={handlePlayPause}
+          onSeek={handleSeek}          {/* ✅ Pass seek handler to Player */}
           sound={sound}
           onNext={() => emitPlayFromQueue(roomId, 0)}
           hasNext={queue.length > 0}
