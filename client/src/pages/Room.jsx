@@ -207,22 +207,27 @@ export default function Room() {
     onPlaySong(({ songData, playUrl, timestamp }) => playSong(songData, playUrl, false, 0, timestamp || 0));
 
     onPauseSong(({ timestamp }) => {
-      if (soundRef.current?.playing()) {
-        if (timestamp !== undefined) soundRef.current.seek(timestamp);
-        pausePositionRef.current = timestamp || soundRef.current.seek() || 0;
-        soundRef.current.pause();
-        setIsPlaying(false);
-      }
-    });
+  if (soundRef.current) {
+    try {
+      pausePositionRef.current = timestamp || soundRef.current.seek() || 0;
+      soundRef.current.seek(pausePositionRef.current);
+      soundRef.current.pause();
+      setIsPlaying(false);
+    } catch (e) {}
+  }
+});
 
-    onResumeSong(({ timestamp }) => {
-      if (soundRef.current && !soundRef.current.playing()) {
-        if (timestamp !== undefined) soundRef.current.seek(timestamp);
-        pausePositionRef.current = timestamp || 0;
-        soundRef.current.play();
-        setIsPlaying(true);
-      }
-    });
+onResumeSong(({ timestamp }) => {
+  if (soundRef.current) {
+    try {
+      const pos = timestamp || pausePositionRef.current || 0;
+      soundRef.current.seek(pos);
+      pausePositionRef.current = pos;
+      soundRef.current.play();
+      setIsPlaying(true);
+    } catch (e) {}
+  }
+});
 
     onChatMessage(msg => setChatMessages(p => [...p, { ...msg, type: 'chat' }]));
     onSystemMessage(msg => setChatMessages(p => [...p, { ...msg, type: 'system' }]));
