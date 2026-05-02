@@ -614,7 +614,7 @@ export default function Room() {
           isPlaying={isPlaying}
           isLoading={isLoading}
           onPlay={handlePlayPause}
-          onSeek={handleSeek}          {/* ✅ Pass seek handler to Player */}
+          onSeek={handleSeek}          
           sound={sound}
           onNext={() => emitPlayFromQueue(roomId, 0)}
           hasNext={queue.length > 0}
